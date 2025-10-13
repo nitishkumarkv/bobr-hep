@@ -11,8 +11,13 @@ authors = [ { name = "Nitish Kumar Kasarauppe Veerappa Gowda", email = "nitish.k
 license = { file = "MIT" }
 requires-python = ">=3.8"
 dependencies = [
-    # list your runtime deps, e.g.:
-    # "numpy>=1.20", "tensorflow>=2.10"
+    "numpy>=1.20",
+    "mplhep",
+    "matplotlib>=3.7",
+    "pandas",
+    "hist",
+    "optuna",
+    "scipy"
 ]
 
 [project.optional-dependencies]

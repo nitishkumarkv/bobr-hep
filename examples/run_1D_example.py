@@ -1,6 +1,6 @@
-from examples.toy_example.generate_toy_data import generate_toy_data, generate_toy_data_gauss
-from utils.plotting import plot_stacked_histograms
-from bobr.cat_optimizer import BOBRBinOptimizer
+from bobr_hep.utils.data_generation import generate_toy_data_1D
+from bobr_hep.utils.plotting import plot_stacked_histograms
+from bobr_hep.cat_optimizer import BOBRBinOptimizer
 import os
 import argparse
 import pandas as pd
@@ -63,13 +63,16 @@ def main():
     #        toy_data[files.split(".")[0]] = df
 
     #toy_data = generate_toy_data_gauss(seed=42)
-    toy_data = generate_toy_data_gauss(
+
+    toy_data = generate_toy_data_1D(
         n_signal=100000,
-        n_bkg1=200000, n_bkg2=100000, n_bkg3=100000,
-        xs_signal=0.5,    # 500 fb = 0.5 pb
-        xs_bkg1=50, xs_bkg2=15, xs_bkg3=10,
-        lumi=100,         # in /fb
-        seed=42
+        n_bkg=100000,
+        xs_signal=0.5,
+        xs_bkg1=100,
+        xs_bkg2=80,
+        xs_bkg3=50,  # in pb
+        lumi=100,  # in /fb
+        seed=42,
     )
     
 
