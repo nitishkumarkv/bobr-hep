@@ -30,7 +30,7 @@ def _sample(name: str, n: int, seed: int | None = None) -> np.ndarray:
 
 
 # 1.  Unchanged 3-D generator (now just uses global MEANS / COV)
-def generate_toy_data_3class_3D(
+def generate_toy_data_3class(
     n_signal1: int = 100_000,
     n_signal2: int = 100_000,
     n_bkg: int = 500_000,
@@ -42,7 +42,7 @@ def generate_toy_data_3class_3D(
     xs_bkg4: float = 20,
     xs_bkg5: float = 10,
     lumi: float = 100.0,
-    noise_scale: float = 0.2,
+    noise_scale: float = 0.3,
     seed: int | None = None,
 ) -> dict[str, pd.DataFrame]:
 

@@ -7,10 +7,11 @@ from typing import Any, Dict, Optional, Sequence
 import numpy as np
 import optuna
 import matplotlib.pyplot as plt
+import mplhep as hep
 import re
+plt.style.use(hep.style.ROOT)
 
-
-class BOBRBase:
+class bobr_base:
     def __init__(
         self,
         df_dict: Dict[str, Any],
@@ -23,6 +24,8 @@ class BOBRBase:
         output_dir: str = "./optimizer_results",
         gamma_strategy: str = "sqrt",
         beta: float = 0.25,
+        min_edge: float = 0.0,
+        max_edge: float = 1.0,
         min_bkg_per_bin: int = 10,
         penalty_low_lambda: float = 1.0,
         penalty_unc_lambda: float = 1.0,
@@ -39,6 +42,10 @@ class BOBRBase:
         self.output_dir = output_dir
         self.gamma_strategy = gamma_strategy
         self.beta = beta
+        if max_edge <= min_edge:
+            raise ValueError(f"max_edge ({max_edge}) must be greater than min_edge ({min_edge}).")
+        self.min_edge = float(min_edge)
+        self.max_edge = float(max_edge)
 
         # outputs filled by subclasses
         self.best_bins: Optional[list] = None
@@ -73,23 +80,19 @@ class BOBRBase:
 
         os.makedirs(self.output_dir, exist_ok=True)
 
-        try:
+        with plt.style.context("default"):
             ax = optuna.visualization.matplotlib.plot_parallel_coordinate(self.study)
             fig = ax.get_figure()
             fig.suptitle("Parallel Coordinates", fontsize=14)
-            fig.savefig(os.path.join(self.output_dir, "parallel_coordinate_plot.png"))
+            fig.savefig(os.path.join(self.output_dir, "parallel_coordinate_plot.pdf"))
             plt.clf()
-        except Exception as e:
-            print("parallel coordinate plot failed:", e)
 
-        try:
+        with plt.style.context("default"):
             ax = optuna.visualization.matplotlib.plot_optimization_history(self.study)
             fig = ax.get_figure()
             fig.suptitle("Optimization History", fontsize=14)
-            fig.savefig(os.path.join(self.output_dir, "optimization_history_plot.png"))
+            fig.savefig(os.path.join(self.output_dir, "optimization_history_plot.pdf"))
             plt.clf()
-        except Exception as e:
-            print("optimization history plot failed:", e)
 
         trials = [trial for trial in self.study.trials if trial.state == optuna.trial.TrialState.COMPLETE]
         if not trials:
@@ -110,7 +113,7 @@ class BOBRBase:
                 plt.ylabel("Bin Boundaries")
                 plt.title(f"Evolution of bin boundaries (n_bins={self.n_bins})")
                 plt.legend()
-                plt.savefig(os.path.join(self.output_dir, f"bin_evolution.png"))
+                plt.savefig(os.path.join(self.output_dir, f"bin_evolution.pdf"))
                 plt.clf()
             except Exception as e:
                 print("bin evolution plot failed:", e)
@@ -143,7 +146,7 @@ class BOBRBase:
                 plt.ylabel("mu value")
                 plt.title("Evolution of Gaussian means (sample)")
                 plt.legend()
-                plt.savefig(os.path.join(self.output_dir, f"mu_evolution.png"))
+                plt.savefig(os.path.join(self.output_dir, f"mu_evolution.pdf"))
                 plt.clf()
             except Exception as e:
                 print("mu evolution plot failed:", e)
@@ -392,10 +395,18 @@ class BOBRBase:
         }
 
     def _compute_low_penalty(self, bkg: np.ndarray, min_bkg: float) -> float:
-        """Compute penalty for bins with low background counts."""
-        return float(np.sum(bkg < min_bkg))
+        """Quadratic penalty: sum_k [max(0, min_bkg - B_k)]^2"""
+        deficit = np.maximum(0.0, min_bkg - bkg)
+        return float(np.sum(deficit**2))
 
-    def _compute_unc_penalty(self, bkg: np.ndarray, bkg_sumsq: np.ndarray, rel_unc_threshold: float) -> float:
-        """Compute penalty for bins with high relative uncertainty."""
-        rel_unc = np.sqrt(bkg_sumsq) / np.maximum(bkg, 1e-10)
-        return float(np.sum(rel_unc > rel_unc_threshold))
+    def _compute_unc_penalty(
+        self,
+        bkg: np.ndarray,
+        bkg_sumsq: np.ndarray,
+        rel_unc_threshold: float,
+    ) -> float:
+        """Quadratic penalty: sum_k [max(0, σ_rel,k - r)]^2, with σ_rel,k = sqrt(sum w^2)/B_k."""
+        eps = 1e-10  # avoid divide-by-zero
+        rel_unc = np.sqrt(bkg_sumsq) / np.maximum(bkg, eps)
+        excess = np.maximum(0.0, rel_unc - rel_unc_threshold)
+        return float(np.sum(excess**2))

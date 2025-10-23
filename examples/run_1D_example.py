@@ -65,15 +65,16 @@ def main():
     parser.add_argument("--plot-toy-data", action="store_true", help="Plot toy data")
     parser.add_argument("--run-bobr", action="store_true", help="Run Bayesian BOBR optimizer")
     parser.add_argument("--run-equidistant", action="store_true", help="Run equidistant binning")
-    parser.add_argument("--nbins", type=int, nargs='+', default=[3, 5, 10, 15, 20], help="List of n_bins values to test")
-    parser.add_argument("--n-trials", type=int, default=None, help="Optuna trials override for all nbins")
+    parser.add_argument("--nbins", type=int, nargs='+', default=[5, 10, 20], help="List of n_bins values to test")
+    parser.add_argument("--n-trials", type=int, default=400, help="Optuna trials override for all nbins")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for toy data generation")
     parser.add_argument("--save-assigned", action="store_true", help="Save per-event assigned bin indices (parquet)")
     parser.add_argument("--min-bkg-per-bin", type=int, default=1, help="Minimum background count per bin (overrides binner default)")
-    parser.add_argument("--penalty-low-lambda", type=float, default=1.0, help="Weight for low-background penalty")
-    parser.add_argument("--penalty-unc-lambda", type=float, default=1.0, help="Weight for relative-uncertainty penalty")
+    parser.add_argument("--penalty-low-lambda", type=float, default=10.0, help="Weight for low-background penalty")
+    parser.add_argument("--penalty-unc-lambda", type=float, default=10.0, help="Weight for relative-uncertainty penalty")
     parser.add_argument("--rel-unc-threshold", type=float, default=0.1, help="Relative uncertainty threshold")
     parser.add_argument("--restart-check-trials", type=int, default=200, help="Trials per restart attempt before halving beta and restarting optimization")
+    parser.add_argument("--n-bkg", type=int, default=100000, help="Number of background events for toy data")
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -85,7 +86,7 @@ def main():
     # Generate toy data (dict of DataFrames)
     toy_data = generate_toy_data_1D(
         n_signal=100000,
-        n_bkg=100000,
+        n_bkg=args.n_bkg,
         xs_signal=0.5,
         xs_bkg1=100,
         xs_bkg2=80,
@@ -332,7 +333,7 @@ def main():
             plt.title('BOBR vs Equidistant: Best Z by n_bins')
             plt.legend()
             plt.grid(True)
-            out_plot = os.path.join(args.output_dir, 'summary_bestZ_comparison.png')
+            out_plot = os.path.join(args.output_dir, 'summary_bestZ_comparison.pdf')
             plt.savefig(out_plot)
             plt.clf()
             print('Wrote summary comparison plot to', out_plot)

@@ -1,12 +1,12 @@
 from typing import Dict, List, Tuple
 import numpy as np
 import optuna
-from .base import BOBRBase
+from .base import bobr_base
 
 
-class bobr_1d(BOBRBase):
+class bobr_1d(bobr_base):
     def run(self) -> Tuple[List[float], Dict[str, 'np.ndarray'], float]:
-        min_edge, max_edge = 0.0, 1.0
+        min_edge, max_edge = self.min_edge, self.max_edge
 
         def objective(trial: optuna.trial.Trial) -> float:
             bin_edges = [min_edge]

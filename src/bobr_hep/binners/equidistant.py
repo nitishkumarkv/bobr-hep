@@ -1,11 +1,11 @@
 from typing import Dict, List, Tuple
 import numpy as np
-from .base import BOBRBase
+from .base import bobr_base
 
 
-class equidistant(BOBRBase):
+class equidistant(bobr_base):
     def run(self) -> Tuple[List[float], Dict[str, np.ndarray], float]:
-        min_edge, max_edge = 0.0, 1.0
+        min_edge, max_edge = self.min_edge, self.max_edge
         edges = np.linspace(min_edge, max_edge, self.n_bins + 1)
         self.best_bins = list(edges)
 
