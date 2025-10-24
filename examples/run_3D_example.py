@@ -252,7 +252,7 @@ def main():
 
             optimizer.visualize_optimization()
             # Always draw the 3 simplex-pair plots (01,02,12) irrespective of dims_to_use
-            optimizer.visualize_bin_boundaries_simplex_pairs()
+            optimizer.visualize_bin_boundaries()
 
             # Plot stacked histograms OVER ASSIGNED bin_index (discrete Integer axis)
             best_signal_hists = [create_binindex_hist(toy_data[s], n_bins, var="bin_index") for s in signal_list]
