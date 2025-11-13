@@ -65,14 +65,14 @@ def main():
     parser.add_argument("--plot-toy-data", action="store_true", help="Plot toy data")
     parser.add_argument("--run-bobr", action="store_true", help="Run Bayesian BOBR optimizer")
     parser.add_argument("--run-equidistant", action="store_true", help="Run equidistant binning")
-    parser.add_argument("--nbins", type=int, nargs='+', default=[5, 10, 20], help="List of n_bins values to test")
+    parser.add_argument("--nbins", type=int, nargs='+', default=[2, 5, 10, 20], help="List of n_bins values to test")
     parser.add_argument("--n-trials", type=int, default=400, help="Optuna trials override for all nbins")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for toy data generation")
     parser.add_argument("--save-assigned", action="store_true", help="Save per-event assigned bin indices (parquet)")
     parser.add_argument("--min-bkg-per-bin", type=int, default=1, help="Minimum background count per bin (overrides binner default)")
-    parser.add_argument("--penalty-low-lambda", type=float, default=10.0, help="Weight for low-background penalty")
-    parser.add_argument("--penalty-unc-lambda", type=float, default=10.0, help="Weight for relative-uncertainty penalty")
-    parser.add_argument("--rel-unc-threshold", type=float, default=0.1, help="Relative uncertainty threshold")
+    parser.add_argument("--penalty-low-lambda", type=float, default=10, help="Weight for low-background penalty")
+    parser.add_argument("--penalty-unc-lambda", type=float, default=0, help="Weight for relative-uncertainty penalty")
+    parser.add_argument("--rel-unc-threshold", type=float, default=0.07, help="Relative uncertainty threshold")
     parser.add_argument("--restart-check-trials", type=int, default=200, help="Trials per restart attempt before halving beta and restarting optimization")
     parser.add_argument("--n-bkg", type=int, default=100000, help="Number of background events for toy data")
     args = parser.parse_args()
@@ -92,7 +92,7 @@ def main():
         xs_bkg2=80,
         xs_bkg3=50,
         lumi=100,
-        seed=args.seed,
+        seed=args.seed
     )
 
     # Quick plots of the toy data
@@ -111,7 +111,7 @@ def main():
             signal_scale=100,
             normalize=False,
             log=True,
-            log_min=1e-5,
+            log_min=1e-1,
         )
 
     nbins_list = args.nbins
@@ -171,6 +171,8 @@ def main():
                 pass
             with open(os.path.join(bobr_output_dir, "optimized_bins.json"), "w") as f:
                 json.dump(make_json_serializable(to_save), f, indent=2)
+            # Save a full checkpoint (JSON metadata + arrays) for later reuse
+            optimizer.save_checkpoint(os.path.join(bobr_output_dir, "checkpoint"))
             summary[str(n_bins)] = summary.get(str(n_bins), {})
             summary[str(n_bins)]["bobr_best_bins"] = best_bins_bobr
             summary[str(n_bins)]["bobr_best_Z"] = best_Z_bobr
@@ -204,17 +206,10 @@ def main():
 
             # Use predict to assign bin indices and optionally save per-event assignments
             # Create a binner instance that has best_bins set so we can call predict
-            pred_binner = bobr_1d(
-                toy_data,
-                bkg_label_lst=bkg_list,
-                signal_label_lst=signal_list,
-                var_label="NN_output",
-                weight_label="weight",
-                n_bins=n_bins,
-                min_bkg_per_bin=args.min_bkg_per_bin,
-            )
-            pred_binner.best_bins = best_bins_bobr
-            pred_binner.n_bins = len(best_bins_bobr) - 1
+            # Load the saved checkpoint and explicitly apply it to the toy data
+            pred_binner = bobr_1d.load_checkpoint(os.path.join(bobr_output_dir, "checkpoint"))
+            # compute per-bin counts and metrics on the toy data (explicit)
+            hist_new, sumsq_new, metrics_new = pred_binner.apply_to_df(toy_data)
             assigned = assign_bins_with_predict(pred_binner, toy_data, save_path=(bobr_output_dir if args.save_assigned else None))
             summary[str(n_bins)]["bobr_assigned_counts"] = {k: int(np.bincount(v, minlength=pred_binner.n_bins).sum()) for k, v in assigned.items()}
             # record Z for summary plot
