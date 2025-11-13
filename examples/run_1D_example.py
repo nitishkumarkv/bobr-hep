@@ -13,7 +13,7 @@ import numpy as np
 def create_hist(df, bin_edges=None):
     # create and fill a hist.Hist using either regular or variable binning
     if bin_edges is None:
-        h = hist.Hist(hist.axis.Regular(50, 0, 1, name="NN_output"), storage=hist.storage.Weight())
+        h = hist.Hist(hist.axis.Regular(30, 0, 1, name="NN_output"), storage=hist.storage.Weight())
     else:
         h = hist.Hist(hist.axis.Variable(bin_edges, name="NN_output"), storage=hist.storage.Weight())
     h.fill(df["NN_output"], weight=df["weight"])

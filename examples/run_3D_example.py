@@ -24,7 +24,7 @@ def create_hist(df, var=None, class_num=None, bin_edges=None):
         var = "NN_output"
 
     if bin_edges is None:
-        h = hist.Hist(hist.axis.Regular(50, 0, 1, name=var), storage=hist.storage.Weight())
+        h = hist.Hist(hist.axis.Regular(30, 0, 1, name=var), storage=hist.storage.Weight())
     else:
         h = hist.Hist(hist.axis.Variable(bin_edges, name=var), storage=hist.storage.Weight())
 
@@ -192,14 +192,14 @@ def main():
             plot_stacked_histograms(
                 bkg_hists, bkg_list,
                 output_filename=f"{data_path}/plot_log_score_{i}.pdf",
-                axis_labels=(f"NN output score {i}", "Events"),
+                axis_labels=(f"NN output (dim {i})", "Events"),
                 signal_hists=signal_hists, signal_labels=signal_list,
                 signal_scale=100, normalize=False, log=True, log_min=None,
             )
             plot_stacked_histograms(
                 bkg_hists, bkg_list,
                 output_filename=f"{data_path}/plot_score_{i}.pdf",
-                axis_labels=(f"NN output score {i}", "Events"),
+                axis_labels=(f"NN output (dim {i})", "Events"),
                 signal_hists=signal_hists, signal_labels=signal_list,
                 signal_scale=100, normalize=False, log=False, log_min=None,
             )
@@ -280,10 +280,28 @@ def main():
             # Save per-bin background yields & rel uncertainty
             save_bin_metrics(gmm_dir, optimizer, prefix="gmm")
 
+            # Save JSON checkpoint for later reuse (single file: <prefix>.json)
+            optimizer.save_checkpoint(os.path.join(gmm_dir, "checkpoint"))
+
             # summary
             summary.setdefault(str(n_bins), {})
             summary[str(n_bins)]["gmm_best_Z"] = gmm_Z
             summary[str(n_bins)]["gmm_components"] = make_json_serializable(best_components)
+        else:
+            # If we didn't run the optimizer now, require loading a saved checkpoint and apply it to the toy data.
+            # This mirrors the 1D example pattern: strict load (no silent fallback) and compute per-label hist/sumsq/metrics.
+            ckpt_path = os.path.join(gmm_dir, "checkpoint")
+            # Load checkpoint (do not attach df on load) and explicitly apply to toy_data
+            pred_gmm = bobr_gmm.load_checkpoint(ckpt_path)
+            hist_new, sumsq_new, metrics_new = pred_gmm.apply_to_df(toy_data)
+            try:
+                gmm_Z = float(metrics_new.get("combined_Z", pred_gmm.best_score))
+            except Exception:
+                gmm_Z = float(pred_gmm.best_score) if getattr(pred_gmm, "best_score", None) is not None else float("nan")
+            gmm_Zs.append(gmm_Z)
+            summary.setdefault(str(n_bins), {})
+            summary[str(n_bins)]["gmm_best_Z"] = gmm_Z
+            summary[str(n_bins)]["gmm_components"] = make_json_serializable(getattr(pred_gmm, "best_components", None))
 
         # ----------------------------------------------------------------
         # 2) Argmax(selected dims) → 1D methods on S1/S2 subsets

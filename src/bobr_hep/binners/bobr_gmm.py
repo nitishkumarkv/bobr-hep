@@ -19,6 +19,9 @@ from .base import bobr_base
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Patch
 from matplotlib.colors import ListedColormap, BoundaryNorm
+import json
+from pathlib import Path
+import datetime
 
 
 class bobr_gmm(bobr_base):
@@ -351,15 +354,15 @@ class bobr_gmm(bobr_base):
         """Assign bins using FINAL (mean, cov, logit) exactly as in gato."""
         if not hasattr(self, "best_components") or self.best_components is None:
             raise RuntimeError("No best components available. Run optimization first.")
-    
+
         # Extract reordered mixture logits from best_components
         mix_logit = np.array([c["logit"] for c in self.best_components])
         logpi = mix_logit - np.logaddexp.reduce(mix_logit)   # log π_k
-    
+
         for lbl, df in self.df_dict.items():
             arr_full = np.vstack(df[self.var_label].to_numpy())
             X = self._slice_dims(arr_full)
-    
+
             # log N_k(x)
             rv_logps = np.stack([
                 multivariate_normal(
@@ -369,10 +372,10 @@ class bobr_gmm(bobr_base):
                 ).logpdf(X)
                 for c in self.best_components
             ], axis=1)
-    
+
             # score = logN + logπ
             logps = rv_logps + logpi[None, :]
-    
+
             if self.assign_mode == "soft":
                 gamma = self._soft_responsibilities(logps, temperature=self.temperature)
                 df["bin_index"] = np.argmax(gamma, axis=1).astype(int)
@@ -450,6 +453,202 @@ class bobr_gmm(bobr_base):
             plt.tight_layout()
             fig.savefig(self.output_dir + f"/labelled_ellipse_{dims[0]}{dims[1]}.pdf")
             plt.clf()
+
+    # ---------------- Checkpointing (JSON-only) ----------------
+    def save_checkpoint(self, path_prefix: str) -> None:
+        """Save checkpoint (single JSON) containing components, per-label hist/sumsq (if present), and metadata."""
+        if not hasattr(self, "best_components") or self.best_components is None:
+            raise RuntimeError("No best_components available. Run optimizer first.")
+
+        p = Path(path_prefix)
+        json_path = p.with_suffix(".json")
+
+        params = {
+            "n_components": int(self.n_components),
+            "dims_to_use": None if self.dims_to_use is None else list(self.dims_to_use),
+            "combination": self.combination,
+            "penalty": float(self.penalty),
+            "assign_mode": self.assign_mode,
+            "temperature": float(self.temperature),
+            "var_label": self.var_label,
+            "weight_label": self.weight_label,
+            "bkg_label_lst": list(self.bkg_label_lst),
+            "signal_label_lst": list(self.signal_label_lst),
+        }
+
+        data = {
+            "params": params,
+            "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "best_score": None if self.best_score is None else float(self.best_score),
+            "best_metrics": getattr(self, "best_metrics", None),
+        }
+
+        # components: convert numpy arrays to lists
+        comps = []
+        for c in self.best_components:
+            comp = {
+                "mean": np.asarray(c["mean"]).tolist(),
+                "cov": np.asarray(c["cov"]).tolist(),
+                "logit": float(c.get("logit", 0.0)),
+            }
+            comps.append(comp)
+        data["components"] = comps
+
+        # optionally include stored hist and sumsq
+        if getattr(self, "best_hist_dict", None) is not None:
+            data["hist"] = {k: np.asarray(v).tolist() for k, v in self.best_hist_dict.items()}
+        if getattr(self, "_best_sumsq_dict", None) is not None:
+            data["sumsq"] = {k: np.asarray(v).tolist() for k, v in getattr(self, "_best_sumsq_dict").items()}
+
+        def _json_default(o):
+            try:
+                import numpy as _np
+            except Exception:
+                _np = None
+            if _np is not None:
+                if isinstance(o, _np.ndarray):
+                    return o.tolist()
+                if isinstance(o, _np.generic):
+                    return o.item()
+            if hasattr(o, "tolist"):
+                try:
+                    return o.tolist()
+                except Exception:
+                    pass
+            if hasattr(o, "item"):
+                try:
+                    return o.item()
+                except Exception:
+                    pass
+            return str(o)
+
+        with open(json_path, "w") as jf:
+            json.dump(data, jf, indent=2, default=_json_default)
+
+    @classmethod
+    def load_checkpoint(cls, path_prefix: str, df_dict: Optional[dict] = None) -> "bobr_gmm":
+        """Load checkpoint JSON and return a populated `bobr_gmm` instance.
+
+        If `df_dict` is provided it will be attached to the instance, but loading
+        does not require it; you may call `apply_to_df()` explicitly later.
+        """
+        p = Path(path_prefix)
+        json_path = p.with_suffix(".json")
+        if not json_path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {json_path}")
+
+        with open(json_path, "r") as jf:
+            data = json.load(jf)
+
+        params = data.get("params", {})
+
+        inst = cls(
+            df_dict or {},
+            bkg_label_lst=params.get("bkg_label_lst", []),
+            signal_label_lst=params.get("signal_label_lst", []),
+            var_label=params.get("var_label", "NN_output"),
+            weight_label=params.get("weight_label", "weight"),
+            n_components=int(params.get("n_components", 0)),
+            dims_to_use=params.get("dims_to_use", None),
+            combination=params.get("combination", "geometric"),
+            penalty=float(params.get("penalty", 0.0)),
+            assign_mode=params.get("assign_mode", "hard"),
+            temperature=float(params.get("temperature", 1.0)),
+        )
+
+        # restore components
+        comps = data.get("components", [])
+        best_components = []
+        for c in comps:
+            best_components.append({
+                "mean": np.asarray(c.get("mean", []), dtype=float),
+                "cov": np.asarray(c.get("cov", []), dtype=float),
+                "logit": float(c.get("logit", 0.0)),
+            })
+        inst.best_components = best_components
+        inst.n_components = len(best_components)
+
+        # restore hist / sumsq dicts if present
+        hist_dict = {}
+        sumsq_dict = {}
+        if "hist" in data and isinstance(data["hist"], dict):
+            for k, v in data["hist"].items():
+                hist_dict[k] = np.asarray(v, dtype=float)
+        if "sumsq" in data and isinstance(data["sumsq"], dict):
+            for k, v in data["sumsq"].items():
+                sumsq_dict[k] = np.asarray(v, dtype=float)
+
+        inst.best_hist_dict = hist_dict or None
+        inst._best_sumsq_dict = sumsq_dict or None
+
+        inst.best_score = data.get("best_score")
+        inst.best_metrics = data.get("best_metrics")
+
+        if df_dict is not None:
+            inst.df_dict = df_dict
+
+        return inst
+
+    def apply_to_df(self, df_dict: dict):
+        """Apply stored components to new data and compute hist, sumsq and metrics.
+
+        Returns (hist_dict, sumsq_dict, metrics)
+        """
+        if not hasattr(self, "best_components") or self.best_components is None:
+            raise RuntimeError("No best_components available. Load a checkpoint or run optimizer first.")
+
+        old_df = getattr(self, "df_dict", None)
+        try:
+            self.df_dict = df_dict
+
+            means = np.array([c["mean"] for c in self.best_components])
+            covs = np.array([c["cov"] for c in self.best_components])
+            mix_logit = np.array([c.get("logit", 0.0) for c in self.best_components])
+
+            hist_dict = {}
+            sumsq_dict = {}
+            for lab, entry in df_dict.items():
+                if isinstance(entry, pd.DataFrame):
+                    X_full = np.vstack(entry[self.var_label].to_numpy())
+                    w = entry[self.weight_label].to_numpy()
+                else:
+                    X_full, w = entry
+                X = self._slice_dims(np.asarray(X_full))
+                w = np.ones(X.shape[0], dtype=float) if w is None else np.asarray(w, dtype=float)
+
+                # logpdf per component
+                rv_logps = np.stack([
+                    multivariate_normal(mean=means[k], cov=covs[k], allow_singular=True).logpdf(X)
+                    for k in range(self.n_components)
+                ], axis=1)
+                logpi = mix_logit - np.logaddexp.reduce(mix_logit)
+                logps = rv_logps + logpi
+
+                if self.assign_mode == "soft":
+                    gamma = self._soft_responsibilities(logps, temperature=self.temperature)
+                    hist = (gamma * w[:, None]).sum(axis=0)
+                    ssq = ((gamma * w[:, None]) ** 2).sum(axis=0)
+                else:
+                    hard_idx = np.argmax(logps, axis=1)
+                    hist = np.zeros(self.n_components, dtype=float)
+                    ssq = np.zeros(self.n_components, dtype=float)
+                    for k in range(self.n_components):
+                        sel = (hard_idx == k)
+                        if sel.any():
+                            ww = w[sel]
+                            hist[k] = float(ww.sum())
+                            ssq[k] = float((ww ** 2).sum())
+
+                hist_dict[lab] = hist
+                sumsq_dict[lab] = ssq
+
+            # compute and store metrics
+            self.compute_and_store_metrics(hist_dict, sumsq_dict)
+            metrics = getattr(self, "best_metrics", {})
+        finally:
+            self.df_dict = old_df
+
+        return hist_dict, sumsq_dict, metrics
 
     def visualize_bins_2d(self):
         """Color points by their assigned final bin_index in each 2D score pair."""
