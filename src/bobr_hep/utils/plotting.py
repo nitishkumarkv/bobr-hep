@@ -67,6 +67,31 @@ def plot_stacked_histograms(
     # Gather values and uncertainties for each background histogram.
     mc_values_list = [_hist.values() for _hist in stacked_hists]
     mc_errors_list = [np.sqrt(_hist.variances()) for _hist in stacked_hists]
+
+    n_bkg = len(mc_values_list)
+
+    if colors is None:
+        # default palette from your image
+        colors = [
+            "#3f90da",
+            "#ffa90e",
+            "#bd1f01",
+            "#94a4a2",
+            "#832db6",
+            "#a96b59",
+            "#e76300",
+            "#b9ac70",
+            "#717581",
+            "#92dadd",
+        ]
+
+    # Make sure we have >= n_bkg colors (repeat if necessary)
+    if len(colors) < n_bkg:
+        repeats = n_bkg // len(colors) + 1
+        colors = (colors * repeats)[:n_bkg]
+    else:
+        # Trim any extra colors
+        colors = colors[:n_bkg]
     
     # Setup figure and axis.
     if ax is None:
@@ -86,7 +111,7 @@ def plot_stacked_histograms(
         linewidth=1,
         yerr=mc_errors_list,
         ax=ax_main,
-        # color=colors,
+        color=colors,
         alpha=0.8,
     )
 
@@ -143,7 +168,7 @@ def plot_stacked_histograms(
     
     handles, labels = ax_main.get_legend_handles_labels()
     ncols = 2 if len(labels) < 6 else 3
-    ax_main.legend(loc="upper right", fontsize=28, ncols=ncols, labelspacing=0.4, columnspacing=1.5)
+    ax_main.legend(loc="upper right", fontsize=23, ncols=ncols, labelspacing=0.4, columnspacing=1.5)
     
     # Save or return the figure.
     if not return_figure:
