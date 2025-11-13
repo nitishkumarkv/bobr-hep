@@ -137,17 +137,18 @@ def main():
     parser.add_argument("--plot-toy-data", action="store_true", help="Plot toy data")
     parser.add_argument("--run-bobr", action="store_true", help="Run BOBR (GMM) optimizer")
     parser.add_argument("--run-equidistant", action="store_true", help="Run equidistant and 1D BOBR on argmax subsets")
-    parser.add_argument("--nbins", type=int, nargs="+", default=[5, 10, 20], help="List of numbers of bins/components to test")
-    parser.add_argument("--n-trials", type=int, default=200, help="Optuna trials per nbins")
+    parser.add_argument("--nbins", type=int, nargs="+", default=[3, 5, 10, 20], help="List of numbers of bins/components to test")
+    parser.add_argument("--n-trials", type=int, default=300, help="Optuna trials per nbins")
     parser.add_argument("--restart-check-trials", type=int, default=50, help="Trials before a beta-halving restart check")
     parser.add_argument("--n-bkg", type=int, default=500000, help="Number of background events for toy data")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--beta", type=float, default=0.25, help="Initial beta for beta-halving restarts")
 
     # penalties/thresholds consistent with 1D script
     parser.add_argument("--min-bkg-per-bin", type=int, default=1, help="Minimum background per bin (penalty threshold)")
     parser.add_argument("--penalty-low-lambda", type=float, default=10.0, help="Weight for low-background penalty")
-    parser.add_argument("--penalty-unc-lambda", type=float, default=10.0, help="Weight for relative-uncertainty penalty")
-    parser.add_argument("--rel-unc-threshold", type=float, default=0.1, help="Relative uncertainty threshold")
+    parser.add_argument("--penalty-unc-lambda", type=float, default=0, help="Weight for relative-uncertainty penalty")
+    parser.add_argument("--rel-unc-threshold", type=float, default=0.07, help="Relative uncertainty threshold")
 
     # which NN_output coordinates to optimize on (defaults to 0,1 = signals)
     parser.add_argument("--dims", type=str, default="0,1,2",
@@ -193,14 +194,14 @@ def main():
                 output_filename=f"{data_path}/plot_log_score_{i}.pdf",
                 axis_labels=(f"NN output score {i}", "Events"),
                 signal_hists=signal_hists, signal_labels=signal_list,
-                signal_scale=100, normalize=False, log=True, log_min=1e-5,
+                signal_scale=100, normalize=False, log=True, log_min=None,
             )
             plot_stacked_histograms(
                 bkg_hists, bkg_list,
                 output_filename=f"{data_path}/plot_score_{i}.pdf",
                 axis_labels=(f"NN output score {i}", "Events"),
                 signal_hists=signal_hists, signal_labels=signal_list,
-                signal_scale=100, normalize=False, log=False, log_min=1e-5,
+                signal_scale=100, normalize=False, log=False, log_min=None,
             )
 
     # Containers for summary plot across nbins
@@ -237,6 +238,9 @@ def main():
             penalty_unc_lambda=args.penalty_unc_lambda,
             rel_unc_threshold=args.rel_unc_threshold,
             restart_check_trials=args.restart_check_trials,
+            beta=args.beta,
+            #min_edge=-0.2,
+            #max_edge=1.2,
         )
 
         best_components, best_hist, best_score = (None, None, None)
@@ -251,6 +255,7 @@ def main():
             gmm_Zs.append(gmm_Z)
 
             optimizer.visualize_optimization()
+            #optimizer.visualize_labelled_ellipses()
             # Always draw the 3 simplex-pair plots (01,02,12) irrespective of dims_to_use
             optimizer.visualize_bin_boundaries()
 
@@ -260,16 +265,16 @@ def main():
             plot_stacked_histograms(
                 best_bkg_hists, bkg_list,
                 output_filename=os.path.join(gmm_dir, "plot_log.pdf"),
-                axis_labels=("Bin Index (GMM)", "Events"),
+                axis_labels=("Bin index", "Events"),
                 signal_hists=best_signal_hists, signal_labels=signal_list,
-                signal_scale=100, normalize=False, log=True, log_min=1e-5,
+                signal_scale=100, normalize=False, log=True, log_min=None,
             )
             plot_stacked_histograms(
                 best_bkg_hists, bkg_list,
                 output_filename=os.path.join(gmm_dir, "plot.pdf"),
-                axis_labels=("Bin Index (GMM)", "Events"),
+                axis_labels=("Bin index", "Events"),
                 signal_hists=best_signal_hists, signal_labels=signal_list,
-                signal_scale=100, normalize=False, log=False, log_min=1e-5,
+                signal_scale=100, normalize=False, log=False, log_min=None,
             )
 
             # Save per-bin background yields & rel uncertainty
@@ -333,14 +338,14 @@ def main():
                     output_filename=os.path.join(equi_s1_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
                     signal_hists=s1_sig_h, signal_labels=["signal1"],
-                    signal_scale=100, normalize=False, log=True, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=True, log_min=None,
                 )
                 plot_stacked_histograms(
                     s1_bkg_h, bkg_list,
                     output_filename=os.path.join(equi_s1_dir, "plot.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
                     signal_hists=s1_sig_h, signal_labels=["signal1"],
-                    signal_scale=100, normalize=False, log=False, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=False, log_min=None,
                 )
             save_bin_metrics(equi_s1_dir, equi_s1, prefix="equi_s1")
 
@@ -376,14 +381,14 @@ def main():
                     output_filename=os.path.join(equi_s2_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
                     signal_hists=s2_sig_h, signal_labels=["signal2"],
-                    signal_scale=100, normalize=False, log=True, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=True, log_min=None,
                 )
                 plot_stacked_histograms(
                     s2_bkg_h, bkg_list,
                     output_filename=os.path.join(equi_s2_dir, "plot.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
                     signal_hists=s2_sig_h, signal_labels=["signal2"],
-                    signal_scale=100, normalize=False, log=False, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=False, log_min=None,
                 )
             save_bin_metrics(equi_s2_dir, equi_s2, prefix="equi_s2")
 
@@ -422,14 +427,14 @@ def main():
                     output_filename=os.path.join(bobr1_s1_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
                     signal_hists=s1_sig_h, signal_labels=["signal1"],
-                    signal_scale=100, normalize=False, log=True, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=True, log_min=None,
                 )
                 plot_stacked_histograms(
                     s1_bkg_h, bkg_list,
                     output_filename=os.path.join(bobr1_s1_dir, "plot.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
                     signal_hists=s1_sig_h, signal_labels=["signal1"],
-                    signal_scale=100, normalize=False, log=False, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=False, log_min=None,
                 )
             save_bin_metrics(bobr1_s1_dir, bobr1_s1, prefix="bobr1_s1")
 
@@ -468,14 +473,14 @@ def main():
                     output_filename=os.path.join(bobr1_s2_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
                     signal_hists=s2_sig_h, signal_labels=["signal2"],
-                    signal_scale=100, normalize=False, log=True, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=True, log_min=None,
                 )
                 plot_stacked_histograms(
                     s2_bkg_h, bkg_list,
                     output_filename=os.path.join(bobr1_s2_dir, "plot.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
                     signal_hists=s2_sig_h, signal_labels=["signal2"],
-                    signal_scale=100, normalize=False, log=False, log_min=1e-5,
+                    signal_scale=100, normalize=False, log=False, log_min=None,
                 )
             save_bin_metrics(bobr1_s2_dir, bobr1_s2, prefix="bobr1_s2")
 

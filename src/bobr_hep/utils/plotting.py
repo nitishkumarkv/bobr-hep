@@ -128,8 +128,8 @@ def plot_stacked_histograms(
             )
 
     # Final styling.
-    ax_main.set_xlabel(axis_labels[0], fontsize=26)
-    ax_main.set_ylabel(axis_labels[1], fontsize=26)
+    ax_main.set_xlabel(axis_labels[0], fontsize=36)
+    ax_main.set_ylabel(axis_labels[1], fontsize=36)
     ax_main.margins(y=0.15)
     if log:
         ax_main.set_yscale("log")
@@ -143,7 +143,7 @@ def plot_stacked_histograms(
     
     handles, labels = ax_main.get_legend_handles_labels()
     ncols = 2 if len(labels) < 6 else 3
-    ax_main.legend(loc="upper right", fontsize=18, ncols=ncols, labelspacing=0.4, columnspacing=1.5)
+    ax_main.legend(loc="upper right", fontsize=28, ncols=ncols, labelspacing=0.4, columnspacing=1.5)
     
     # Save or return the figure.
     if not return_figure:
@@ -153,7 +153,7 @@ def plot_stacked_histograms(
         plt.close(fig)
     else:
         return fig, ax_main
-    
+
 def create_hist(df, bin_edges=None):
 
     # create list of hist and fill them
@@ -197,5 +197,5 @@ if __name__ == "__main__":
         signal_labels=signal_list,
         normalize=False,
         log=False,
-        log_min=1e-5,
+        log_min=10,
     )

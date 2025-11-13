@@ -317,7 +317,10 @@ class bobr_gmm(bobr_base):
         )
 
         # Finalize outputs
-        self.best_components = [{"mean": means[k], "cov": covs[k]} for k in range(self.n_components)]
+        self.best_components = [
+            {"mean": means[k], "cov": covs[k], "logit": mix_logit[k]}
+            for k in range(self.n_components)
+        ]
         self.best_hist_dict = hist_dict
         self.compute_and_store_metrics(hist_dict, sumsq_dict)
 
@@ -345,21 +348,37 @@ class bobr_gmm(bobr_base):
         return self.best_components, self.best_hist_dict, self.best_score
 
     def assign_bins_to_data(self):
-        """Assign each event a 'bin_index' using the FINAL (reordered) components.
-
-        No extra permutation applied (no rank_map). This fixes the double-permutation bug.
-        """
+        """Assign bins using FINAL (mean, cov, logit) exactly as in gato."""
         if not hasattr(self, "best_components") or self.best_components is None:
             raise RuntimeError("No best components available. Run optimization first.")
-
+    
+        # Extract reordered mixture logits from best_components
+        mix_logit = np.array([c["logit"] for c in self.best_components])
+        logpi = mix_logit - np.logaddexp.reduce(mix_logit)   # log π_k
+    
         for lbl, df in self.df_dict.items():
             arr_full = np.vstack(df[self.var_label].to_numpy())
-            arr = self._slice_dims(arr_full)
-            logpdf = np.stack([
-                multivariate_normal(mean=g["mean"], cov=g["cov"], allow_singular=True).logpdf(arr)
-                for g in self.best_components
+            X = self._slice_dims(arr_full)
+    
+            # log N_k(x)
+            rv_logps = np.stack([
+                multivariate_normal(
+                    mean=c["mean"],
+                    cov=c["cov"],
+                    allow_singular=True,
+                ).logpdf(X)
+                for c in self.best_components
             ], axis=1)
-            df["bin_index"] = np.argmax(logpdf, axis=1).astype(int)
+    
+            # score = logN + logπ
+            logps = rv_logps + logpi[None, :]
+    
+            if self.assign_mode == "soft":
+                gamma = self._soft_responsibilities(logps, temperature=self.temperature)
+                df["bin_index"] = np.argmax(gamma, axis=1).astype(int)
+            else:
+                # hard assignment
+                df["bin_index"] = np.argmax(logps, axis=1).astype(int)
 
     # -- Predict / visualize helpers ---------------------------
     def predict(self, X: np.ndarray):
@@ -486,10 +505,27 @@ class bobr_gmm(bobr_base):
         model_dims = list(self.dims_to_use) if getattr(self, "dims_to_use", None) else list(range(k))
 
         os.makedirs(self.output_dir, exist_ok=True)
-        colors = [plt.cm.get_cmap('tab20')(i) for i in range(self.n_components)]
+        #colors = [plt.cm.get_cmap('tab20')(i) for i in range(self.n_components)]
+        #cmap_bins = ListedColormap(colors)
+        #bounds = np.arange(self.n_components + 1) - 0.5
+        #norm = BoundaryNorm(bounds, cmap_bins.N)
+        # Build color list from Matplotlib base + tab colors, similar to plot_bin_boundaries_2D
+        base = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        tab = ["tab:olive", "tab:cyan", "tab:green", "tab:pink", "tab:brown", "black"]
+        needed = self.n_components - (len(base) + len(tab))
+
+        # Optionally define a helper for extra distinct colors if you want exact match:
+        def get_distinct_colors(n):
+            import colorsys
+            hues = np.linspace(0, 1, n, endpoint=False)
+            return [colorsys.hsv_to_rgb(h, 0.7, 0.9) for h in hues]
+        
+        extra = [] if needed < 1 else get_distinct_colors(needed)
+        colors = (base + tab + extra)[: self.n_components]
+        
         cmap_bins = ListedColormap(colors)
         bounds = np.arange(self.n_components + 1) - 0.5
-        norm = BoundaryNorm(bounds, cmap_bins.N)
+        norm = BoundaryNorm(bounds, len(colors))
 
         def eval_logpdf_k(Pk: np.ndarray) -> np.ndarray:
             N = Pk.shape[0]
@@ -521,7 +557,7 @@ class bobr_gmm(bobr_base):
             assign = np.full(X.shape, np.nan)
             assign[mask] = np.argmax(logps, axis=1)
 
-            fig, ax = plt.subplots(figsize=(8, 6))
+            fig, ax = plt.subplots(figsize=(7, 6))
             ax.contourf(X, Y, assign, levels=bounds, cmap=cmap_bins, norm=norm, alpha=0.6)
             ax.contour(X, Y, assign, levels=bounds, colors='k', linewidths=0.8)
 
@@ -530,15 +566,15 @@ class bobr_gmm(bobr_base):
                 yi = Y[assign == c]
                 if xi.size:
                     ax.text(float(xi.mean()), float(yi.mean()), str(c),
-                            color=colors[c], fontsize=10, fontweight='bold',
+                            color=colors[c], fontsize=15, fontweight='bold',
                             ha='center', va='center')
 
             proxies = [Patch(color=colors[c], label=f'Bin {c}') for c in range(self.n_components)]
-            ax.legend(handles=proxies, ncol=2, fontsize=9, loc='upper right')
+            ax.legend(handles=proxies, ncol=2, fontsize=12, loc='upper right', labelspacing=0.4, columnspacing=1.5)
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
-            ax.set_xlabel(f"score_{i}")
-            ax.set_ylabel(f"score_{j}")
+            ax.set_xlabel(f"Discriminant dim. {i}")
+            ax.set_ylabel(f"Discriminant dim. {j}")
             #ax.set_title(f"Bin regions (dims={i},{j})")
             plt.tight_layout()
             fig.savefig(os.path.join(self.output_dir, f"bin_boundaries_{i}{j}.pdf"))
