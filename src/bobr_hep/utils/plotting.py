@@ -7,7 +7,7 @@ plt.style.use(hep.style.ROOT)
 ########################################################################################
 # functions copied from: https://github.com/FloMau/gato/tree/master/
 ########################################################################################
-
+    
 def plot_stacked_histograms(
     stacked_hists,           # list of hist.hist objects for backgrounds
     process_labels,          # list of labels for backgrounds
@@ -23,33 +23,12 @@ def plot_stacked_histograms(
     colors=None,
     return_figure=False,
     ax=None,
+    equidistant_bins=True,  # <<< NEW: plot all bins with equal graphical width
 ):
     """
     Plots stacked histograms for backgrounds and overlays signal histograms.
-    This is a simplified version that drops ratio panels, data hist, and CMS labels.
-    
-    Parameters:
-      - stacked_hists: list of hist.hist objects (backgrounds).
-      - process_labels: list of strings for background process names.
-      - output_filename: file name to save the figure.
-      - axis_labels: tuple with (x-axis label, y-axis label).
-      - signal_hists: list of hist.hist objects for signals (optional).
-      - signal_labels: list of labels for signal histograms (optional).
-      - normalize: if True, normalize the histograms.
-      - log: if True, use log scale on the y-axis.
-      - log_min: if provided, set the y-axis lower limit.
-      - include_flow: if True, include overflow/underflow (functionality not implemented here).
-      - colors: list of colors for the backgrounds.
-      - return_figure: if True, return (fig, ax) instead of saving.
-      - ax: if provided, plot on the given axes.
     """
-    
-    # Optionally include overflow/underflow here if needed (not implemented in this version)
-    # if include_flow:
-    #     stacked_hists = [include_overflow_underflow(h) for h in stacked_hists]
-    #     if signal_hists:
-    #         signal_hists = [include_overflow_underflow(h) for h in signal_hists]
-    
+
     # Normalization if requested.
     if normalize:
         stack_integral = sum([_hist.sum().value for _hist in stacked_hists])
@@ -59,11 +38,18 @@ def plot_stacked_histograms(
                 integral_ = sig.sum().value
                 if integral_ > 0:
                     signal_hists[i] = sig / integral_
-    
-    # Prepare binning from the first histogram.
-    # We assume that each hist has one axis and use its bin edges.
-    bin_edges = stacked_hists[0].to_numpy()[1]
-    
+
+    # Original binning from the first histogram (physics binning)
+    orig_bin_edges = stacked_hists[0].to_numpy()[1]
+
+    # Binning used *for plotting*
+    if equidistant_bins:
+        # N bins -> edges 0..N
+        n_bins = len(orig_bin_edges) - 1
+        plot_bin_edges = np.arange(n_bins + 1, dtype=float)
+    else:
+        plot_bin_edges = orig_bin_edges
+
     # Gather values and uncertainties for each background histogram.
     mc_values_list = [_hist.values() for _hist in stacked_hists]
     mc_errors_list = [np.sqrt(_hist.variances()) for _hist in stacked_hists]
@@ -71,7 +57,6 @@ def plot_stacked_histograms(
     n_bkg = len(mc_values_list)
 
     if colors is None:
-        # default palette from your image
         colors = [
             "#3f90da",
             "#ffa90e",
@@ -85,14 +70,12 @@ def plot_stacked_histograms(
             "#92dadd",
         ]
 
-    # Make sure we have >= n_bkg colors (repeat if necessary)
     if len(colors) < n_bkg:
         repeats = n_bkg // len(colors) + 1
         colors = (colors * repeats)[:n_bkg]
     else:
-        # Trim any extra colors
         colors = colors[:n_bkg]
-    
+
     # Setup figure and axis.
     if ax is None:
         fig, ax_main = plt.subplots(figsize=(10, 9))
@@ -104,7 +87,7 @@ def plot_stacked_histograms(
     hep.histplot(
         mc_values_list,
         label=process_labels,
-        bins=bin_edges,
+        bins=plot_bin_edges,
         stack=True,
         histtype="fill",
         edgecolor="black",
@@ -115,24 +98,23 @@ def plot_stacked_histograms(
         alpha=0.8,
     )
 
-    # Add an uncertainty band for the total MC (background) if desired.
+    # Total MC band
     mc_total = np.sum(mc_values_list, axis=0)
     mc_total_var = np.sum([err**2 for err in mc_errors_list], axis=0)
     mc_total_err = np.sqrt(mc_total_var)
     hep.histplot(
         mc_total,
-        bins=bin_edges,
+        bins=plot_bin_edges,
         histtype="band",
         yerr=mc_total_err,
         ax=ax_main,
         alpha=0.5,
-        label=None,  # No legend entry for the band.
+        label=None,
     )
 
-    # Overlay signal histograms if provided.
+    # Overlay signals
     if signal_hists:
         for sig_hist, label in zip(signal_hists, signal_labels):
-            
             if signal_scale != 1.0:
                 sig_hist_ = sig_hist * signal_scale
                 label += f" x {signal_scale}"
@@ -141,21 +123,22 @@ def plot_stacked_histograms(
             else:
                 sig_values = sig_hist.values()
                 sig_errors = np.sqrt(sig_hist.variances())
-            
+
             hep.histplot(
                 [sig_values],
                 label=[label],
-                bins=bin_edges,
+                bins=plot_bin_edges,
                 linewidth=3,
                 linestyle="--",
                 yerr=sig_errors,
                 ax=ax_main,
             )
 
-    # Final styling.
+    # Axis labels & scaling
     ax_main.set_xlabel(axis_labels[0], fontsize=36)
     ax_main.set_ylabel(axis_labels[1], fontsize=36)
     ax_main.margins(y=0.15)
+
     if log:
         ax_main.set_yscale("log")
         ax_main.set_ylim(ax_main.get_ylim()[0], 30 * ax_main.get_ylim()[1])
@@ -163,14 +146,32 @@ def plot_stacked_histograms(
             ax_main.set_ylim(log_min, ax_main.get_ylim()[1])
     else:
         ax_main.set_ylim(0, 1.25 * ax_main.get_ylim()[1])
-        ax_main.tick_params(labelsize=22)
+
     ax_main.tick_params(labelsize=24)
-    
+
+    # --- HERE: make the x-axis look like your second plot ---
+    if equidistant_bins:
+        # place ticks at the (equal) bin edges, label with original edges
+        ax_main.set_xticks(np.arange(len(orig_bin_edges)))
+        ax_main.set_xticklabels(
+            [f"{edge:.3f}" for edge in orig_bin_edges],
+            rotation=45,
+            ha="right",
+        )
+        ax_main.set_xlim(0, len(orig_bin_edges) - 1)
+
+    # Legend
     handles, labels = ax_main.get_legend_handles_labels()
     ncols = 2 if len(labels) < 6 else 3
-    ax_main.legend(loc="upper right", fontsize=23, ncols=ncols, labelspacing=0.4, columnspacing=1.5)
-    
-    # Save or return the figure.
+    ax_main.legend(
+        loc="upper right",
+        fontsize=23,
+        ncols=ncols,
+        labelspacing=0.4,
+        columnspacing=1.5,
+    )
+
+    # Save or return
     if not return_figure:
         os.makedirs(os.path.dirname(output_filename), exist_ok=True)
         plt.tight_layout()
