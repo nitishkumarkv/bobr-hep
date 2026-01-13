@@ -41,7 +41,10 @@ class bobr_1d(bobr_base):
             return obj
 
         def _run_opt(n_trials_local: int):
-            sampler = optuna.samplers.TPESampler(gamma=self.gamma_fn())
+            sampler = optuna.samplers.TPESampler(
+            gamma=self.gamma_fn(),
+            seed=self.seed_optimizer,
+        )
             # create study only if it doesn't exist so multiple calls accumulate trials
             if getattr(self, "study", None) is None:
                 self.study = optuna.create_study(direction="maximize", sampler=sampler)

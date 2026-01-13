@@ -38,14 +38,14 @@ class bobr_gmm(bobr_base):
         df_dict: dict = None,
         bkg_label_lst: Optional[Sequence[str]] = None,
         signal_label_lst: Optional[Sequence[str]] = None,
-        var_label: Optional[str] = None,      # typically "NN_output"
-        weight_label: Optional[str] = None,   # typically "weight"
+        var_label: Optional[str] = None,
+        weight_label: Optional[str] = None,
         n_components: int = 6,
         dims_to_use: Optional[Sequence[int]] = None,
         combination: str = "quadrature",
         penalty: float = 0.0,
-        assign_mode: str = "hard",            # <--- NEW, default hard
-        temperature: float = 1.0,             # used only if assign_mode="soft"
+        assign_mode: str = "hard",
+        temperature: float = 1.0,
         **kwargs,
     ) -> None:
         super().__init__(
@@ -65,16 +65,29 @@ class bobr_gmm(bobr_base):
             raise ValueError("assign_mode must be 'hard' or 'soft'")
         self.temperature = float(temperature)
 
-    # -- Helpers -------------------------------------------------
+        # Mean parameterization
+        self.mean_norm = str(kwargs.pop("mean_norm", "softmax")).lower()  # "none" | "softmax" | "sigmoid"
+        if self.mean_norm not in ("none", "softmax", "sigmoid"):
+            raise ValueError("mean_norm must be one of: 'none', 'softmax', 'sigmoid'")
+
+        # Optional range for sigmoid means (old-style box constraint)
+        self.mean_range = kwargs.pop("mean_range", (float(self.min_edge), float(self.max_edge)))
+
+
     def _infer_n_dims(self, data) -> int:
         first_key = next(iter(sorted(data.keys())))
         sample = data[first_key]
         if isinstance(sample, pd.DataFrame):
             X0 = np.vstack(sample[self.var_label].to_numpy())
-        else:  # tuple (X, w)
+        else:
             X0 = sample[0]
+
+        # cache full NN-output dimensionality (before slicing)
+        self._full_dim = int(X0.shape[1])
+
+        # model dimension after slicing
         if self.dims_to_use is None:
-            return X0.shape[1]
+            return self._full_dim
         return len(self.dims_to_use)
 
     def _slice_dims(self, X: np.ndarray) -> np.ndarray:
@@ -83,52 +96,131 @@ class bobr_gmm(bobr_base):
         return X[:, self.dims_to_use]
 
     def _build_param_vector(self, trial, n_dims: int):
-        """Sample means, raw Cholesky entries, and mixture logits from Optuna."""
         means = np.zeros((self.n_components, n_dims))
         tril_raw = np.zeros((self.n_components, n_dims, n_dims))
         mix_logit = np.zeros(self.n_components)
-#
-#        for k in range(self.n_components):
-#            mix_logit[k] = trial.suggest_float(f"mix_logit_{k}", -6.0, 6.0)
-#            for d in range(n_dims):
-#                means[k, d] = trial.suggest_float(f"mu_{k}_{d}", self.min_edge, self.max_edge)
-#                for d2 in range(d + 1):
-#                    tril_raw[k, d, d2] = trial.suggest_float(f"L_{k}_{d}_{d2}", -3.0, 3.0)
-
-        
-        R = max(1e-6, float(self.max_edge) - float(self.min_edge))  # characteristic scale
 
         for k in range(self.n_components):
-            # mixture weights: wide but finite is fine
             mix_logit[k] = trial.suggest_float(f"mix_logit_{k}", -6.0, 6.0)
 
             for d in range(n_dims):
-                # means stay within the variable domain
-                means[k, d] = trial.suggest_float(f"mu_{k}_{d}", self.min_edge, self.max_edge)
+                # raw means (will be softmax-normalised later if needed)
+                means[k, d] = trial.suggest_float(
+                    f"mu_{k}_{d}", -4, 4
+                )
 
                 for d2 in range(d + 1):
                     if d2 == d:
-                        # diagonal: raw is log(σ); keep σ relative to data scale
-                        sigma_min = 0.02 * R   # narrower end (2% of range)
-                        sigma_max = 0.80 * R   # broad but not absurd
-                        lo = math.log(max(sigma_min, 1e-6))
-                        hi = math.log(max(sigma_max, 1e-6))
-                        tril_raw[k, d, d2] = trial.suggest_float(f"L_{k}_{d}_{d2}", lo, hi)
+                        # dimensionless raw log-scale
+                        tril_raw[k, d, d2] = trial.suggest_float(
+                            f"L_{k}_{d}_{d2}", -2.0, 2.0
+                        )
                     else:
-                        # off-diagonals live in "data units" (same as σ); cap to a fraction of R
-                        off = 0.50 * R  # 50% of range is generous; tighten to 0.3*R if needed
-                        tril_raw[k, d, d2] = trial.suggest_float(f"L_{k}_{d}_{d2}", -off, off)
+                        # dimensionless correlation control
+                        tril_raw[k, d, d2] = trial.suggest_float(
+                            f"L_{k}_{d}_{d2}", -1.0, 1.0
+                        )
 
         return means, tril_raw, mix_logit
 
-    def _tril_to_cov(self, tril_raw: np.ndarray) -> np.ndarray:
+
+    def _effective_means(self, means_raw: np.ndarray) -> np.ndarray:
+        """
+        Map raw mean parameters into effective mean space.
+    
+        If mean_norm="softmax":
+          - If we use ALL coords (model_dim == full_dim): softmax over model_dim -> sum==1
+          - If we use a SUBSET (model_dim < full_dim): softmax over (model_dim+1) and drop last
+            -> sums <= 1, matching (p0,p1) triangle from a 3-class softmax.
+    
+        If mean_norm="none": identity.
+        If mean_norm="sigmoid": sigmoid + affine map into mean_range (box domain).
+        """
+        means_raw = np.asarray(means_raw, dtype=float)
+    
+        if self.mean_norm == "none":
+            return means_raw
+    
+        if self.mean_norm == "sigmoid":
+            lo, hi = self.mean_range
+            span = float(hi) - float(lo)
+            return float(lo) + (1.0 / (1.0 + np.exp(-means_raw))) * span
+    
+        # --- softmax mode ---
+        model_dim = int(means_raw.shape[1])
+        full_dim = int(getattr(self, "_full_dim", model_dim))
+    
+        if model_dim == full_dim:
+            # using all outputs: means on full simplex (sum == 1)
+            z = means_raw - means_raw.max(axis=1, keepdims=True)
+            e = np.exp(z)
+            return e / e.sum(axis=1, keepdims=True)
+    
+        if model_dim < full_dim:
+            # using subset: represent as first model_dim coords of a (model_dim+1)-simplex (sum <= 1)
+            zeros = np.zeros((means_raw.shape[0], 1), dtype=float)
+            full = np.concatenate([means_raw, zeros], axis=1)  # (K, model_dim+1)
+            full = full - full.max(axis=1, keepdims=True)
+            e = np.exp(full)
+            probs = e / e.sum(axis=1, keepdims=True)
+            return probs[:, :model_dim]
+    
+        raise RuntimeError(f"Invalid dims: model_dim={model_dim} > full_dim={full_dim}")
+
+    def _compute_sigma_base(self, model_dim: int) -> float:
+        """
+        GATO-style sigma_base but using the *intrinsic* simplex dimension when mean_norm='softmax'.
+
+        For C-class simplex:
+          intrinsic dimension = C - 1
+
+        - If model_dim == full_dim (using all C coords), C = model_dim
+          -> m = model_dim - 1
+        - If model_dim < full_dim (using subset), the simplex is still C = full_dim
+          -> m = full_dim - 1
+
+        If not softmax, use m = model_dim (box-like space).
+        """
+        full_dim = int(getattr(self, "_full_dim", model_dim))
+
+        if self.mean_norm == "softmax":
+            C = full_dim  # underlying simplex size
+            m = max(C - 1, 1)
+            # use V_simp for the C-simplex (dimension m)
+            V_simp = math.sqrt(C) / math.factorial(C - 1)
+        else:
+            m = max(model_dim, 1)
+            # treat as box-like; V_simp not meaningful, but keep a sane scale:
+            # use V_simp=1 so sigma_base ~ (1/(K*V_ball))^(1/m)
+            V_simp = 1.0
+
+        V_ball = math.pi ** (m / 2.0) / math.gamma(m / 2.0 + 1.0)
+        return (V_simp / (self.n_components * V_ball)) ** (1.0 / m)
+
+
+    def _tril_to_cov(self, tril_raw: np.ndarray, kappa: float = 0.1) -> np.ndarray:
+        K, D, _ = tril_raw.shape
+
+        if not hasattr(self, "_sigma_base"):
+            self._sigma_base = self._compute_sigma_base(D)
+
         covs = []
-        for k in range(tril_raw.shape[0]):
-            L = np.tril(tril_raw[k])
-            for i in range(L.shape[0]):
-                L[i, i] = math.exp(L[i, i])
-            cov = L @ L.T
-            covs.append(cov)
+        for k in range(K):
+            L_raw = np.tril(tril_raw[k])
+
+            # strictly lower-triangular, damped
+            off = L_raw.copy()
+            np.fill_diagonal(off, 0.0)
+            off *= kappa
+
+            # diagonal: sigma_base * exp(raw_diag)
+            raw_diag = np.diag(L_raw)
+            sigma = self._sigma_base * np.exp(raw_diag)
+            Dmat = np.diag(sigma)
+
+            L = off + Dmat
+            covs.append(L @ L.T)
+
         return np.array(covs)
 
     def _assign_components(self, X: np.ndarray, means: np.ndarray, covs: np.ndarray, mix_logit: np.ndarray):
@@ -140,7 +232,7 @@ class bobr_gmm(bobr_base):
 
         for k in range(n_components):
             try:
-                rv = multivariate_normal(mean=means[k], cov=covs[k], allow_singular=False)
+                rv = multivariate_normal(mean=means[k], cov=covs[k], allow_singular=True)
                 logps[:, k] = rv.logpdf(X) + logpi[k]
             except Exception:
                 logps[:, k] = -1e12
@@ -152,8 +244,13 @@ class bobr_gmm(bobr_base):
         p = np.exp(z)
         return p / p.sum(axis=1, keepdims=True)
 
-    def _canonicalize_components(self, means: np.ndarray, covs: np.ndarray, mix_logit: np.ndarray, key: str = "mean0"):
-        """Deterministically order components to break label switching symmetry."""
+    def _canonicalize_components(self, means: np.ndarray, covs: np.ndarray, mix_logit: np.ndarray, tril_raw=None, key: str = "mean0"):
+        """Deterministically order components to break label switching symmetry.
+
+        Returns (means_c, covs_c, mix_logit_c, order, tril_raw_canonical_or_None).
+        If `tril_raw` is provided it will be reordered to match the canonicalization
+        and returned as the fifth value.
+        """
         if key == "mean0":
             order = np.argsort(means[:, 0])
         elif key == "weight":
@@ -162,7 +259,17 @@ class bobr_gmm(bobr_base):
         else:
             trace = np.array([np.trace(c) for c in covs])
             order = np.argsort(trace)
-        return means[order], covs[order], mix_logit[order], order
+
+        means_c = means[order]
+        covs_c = covs[order]
+        mix_logit_c = mix_logit[order]
+
+        tril_c = None
+        if tril_raw is not None:
+            tril_arr = np.asarray(tril_raw)
+            tril_c = tril_arr[order]
+
+        return means_c, covs_c, mix_logit_c, tril_c, order
 
     def _bin_significance(self, s: np.ndarray, b: np.ndarray, eps: float = 1e-10) -> np.ndarray:
         b = np.maximum(b, eps)
@@ -171,7 +278,7 @@ class bobr_gmm(bobr_base):
         Z_gauss  = s / np.sqrt(b)
         return np.where(r < 0.1, Z_gauss, Z_asimov)
 
-    def _reindex_by_descending_significance(self, means, covs, mix_logit, hist_dict):
+    def _reindex_by_descending_significance(self, means, covs, mix_logit, trial_raw, hist_dict):
         """Reorder components by descending per-bin Z and reorder `hist_dict` accordingly."""
         s = np.add.reduce([hist_dict[l] for l in self.signal_label_lst])
         b = np.add.reduce([hist_dict[l] for l in self.bkg_label_lst])
@@ -181,17 +288,19 @@ class bobr_gmm(bobr_base):
         means     = means[order]
         covs      = covs[order]
         mix_logit = mix_logit[order]
+        trial_raw = trial_raw[order]
         hist_dict = {k: v[order] for k, v in hist_dict.items()}
-        return means, covs, mix_logit, hist_dict, order
+        return means, covs, mix_logit, trial_raw, hist_dict, order
 
     # -- Objective for optuna -----------------------------------
     def objective(self, trial, data):
         """Optimize *in the same assignment mode used for reporting* (default: hard)."""
         n_dims = self._infer_n_dims(data)
 
-        means, tril_raw, mix_logit = self._build_param_vector(trial, n_dims)
+        means_raw, tril_raw, mix_logit = self._build_param_vector(trial, n_dims)
+        means = self._effective_means(means_raw)          # <-- ADD THIS
         covs = self._tril_to_cov(tril_raw)
-        means, covs, mix_logit, _ = self._canonicalize_components(means, covs, mix_logit, key="mean0")
+        means, covs, mix_logit, tril_raw, _ = self._canonicalize_components(means, covs, mix_logit, tril_raw, key="mean0")
 
         hist_dict, sumsq_dict = {}, {}
 
@@ -251,8 +360,8 @@ class bobr_gmm(bobr_base):
         sampler = optuna.samplers.TPESampler(
             gamma=self.gamma_fn(),
             multivariate=True,
-            seed=42,
-            n_startup_trials=50,
+            seed=self.seed_optimizer,
+            n_startup_trials=100,
             group=True,
         )
 
@@ -274,9 +383,10 @@ class bobr_gmm(bobr_base):
         # Reconstruct the *best* parameter set
         trial = self.study.best_trial
         n_dims = self._infer_n_dims(data)
-        means, tril_raw, mix_logit = self._build_param_vector_from_trial(trial, n_dims)
+        means_raw, tril_raw, mix_logit = self._build_param_vector_from_trial(trial, n_dims)
+        means = self._effective_means(means_raw)          # <-- ADD THIS
         covs = self._tril_to_cov(tril_raw)
-        means, covs, mix_logit, _ = self._canonicalize_components(means, covs, mix_logit, key="mean0")
+        means, covs, mix_logit, tril_raw, _ = self._canonicalize_components(means, covs, mix_logit, tril_raw, key="mean0")
 
         # Build counts/sumsq again in the chosen assignment mode
         hist_dict, sumsq_dict = {}, {}
@@ -315,13 +425,13 @@ class bobr_gmm(bobr_base):
             hist_dict[lab], sumsq_dict[lab] = hist, ssq
 
         # Reorder components by descending bin significance ON THE SAME COUNTS
-        means, covs, mix_logit, hist_dict, order = self._reindex_by_descending_significance(
-            means, covs, mix_logit, hist_dict
+        means, covs, mix_logit, tril_raw, hist_dict, order = self._reindex_by_descending_significance(
+            means, covs, mix_logit, tril_raw, hist_dict
         )
 
         # Finalize outputs
         self.best_components = [
-            {"mean": means[k], "cov": covs[k], "logit": mix_logit[k]}
+            {"mean": means[k], "cov": covs[k], "logit": mix_logit[k], "tril_raw": tril_raw[k]}
             for k in range(self.n_components)
         ]
         self.best_hist_dict = hist_dict
@@ -342,7 +452,6 @@ class bobr_gmm(bobr_base):
         self._last_study = self.study
 
         # Assign bins to the original data using the *reordered* components.
-        # IMPORTANT: no second permutation (no rank_map). Argmax directly matches final bin order.
         try:
             self.assign_bins_to_data()
         except Exception:
@@ -351,7 +460,7 @@ class bobr_gmm(bobr_base):
         return self.best_components, self.best_hist_dict, self.best_score
 
     def assign_bins_to_data(self):
-        """Assign bins using FINAL (mean, cov, logit) exactly as in gato."""
+        """Assign bins using FINAL (mean, cov, logit)."""
         if not hasattr(self, "best_components") or self.best_components is None:
             raise RuntimeError("No best components available. Run optimization first.")
 
@@ -393,9 +502,11 @@ class bobr_gmm(bobr_base):
             return None
         _, k_str, d_str = keys[0].split("_")
         n_dims = int(d_str) + 1
-        means, tril_raw, mix_logit = self._build_param_vector_from_trial(trial, n_dims)
+
+        means_raw, tril_raw, mix_logit = self._build_param_vector_from_trial(trial, n_dims)
+        means = self._effective_means(means_raw)          # <-- ADD THIS
         covs = self._tril_to_cov(tril_raw)
-        return self._assign_components(X[:, :n_dims], means, covs)
+        return self._assign_components(X[:, :n_dims], means, covs, mix_logit)
 
     def _build_param_vector_from_trial(self, trial, n_dims: int):
         means = np.zeros((self.n_components, n_dims))
@@ -490,6 +601,7 @@ class bobr_gmm(bobr_base):
                 "mean": np.asarray(c["mean"]).tolist(),
                 "cov": np.asarray(c["cov"]).tolist(),
                 "logit": float(c.get("logit", 0.0)),
+                "tril_raw": np.asarray(c.get("tril_raw", [])).tolist(),
             }
             comps.append(comp)
         data["components"] = comps
@@ -564,6 +676,7 @@ class bobr_gmm(bobr_base):
                 "mean": np.asarray(c.get("mean", []), dtype=float),
                 "cov": np.asarray(c.get("cov", []), dtype=float),
                 "logit": float(c.get("logit", 0.0)),
+                "tril_raw": np.asarray(c.get("tril_raw", []), dtype=float),
             })
         inst.best_components = best_components
         inst.n_components = len(best_components)
@@ -704,11 +817,6 @@ class bobr_gmm(bobr_base):
         model_dims = list(self.dims_to_use) if getattr(self, "dims_to_use", None) else list(range(k))
 
         os.makedirs(self.output_dir, exist_ok=True)
-        #colors = [plt.cm.get_cmap('tab20')(i) for i in range(self.n_components)]
-        #cmap_bins = ListedColormap(colors)
-        #bounds = np.arange(self.n_components + 1) - 0.5
-        #norm = BoundaryNorm(bounds, cmap_bins.N)
-        # Build color list from Matplotlib base + tab colors, similar to plot_bin_boundaries_2D
         base = plt.rcParams["axes.prop_cycle"].by_key()["color"]
         tab = ["tab:olive", "tab:cyan", "tab:green", "tab:pink", "tab:brown", "black"]
         needed = self.n_components - (len(base) + len(tab))
@@ -727,11 +835,19 @@ class bobr_gmm(bobr_base):
         norm = BoundaryNorm(bounds, len(colors))
 
         def eval_logpdf_k(Pk: np.ndarray) -> np.ndarray:
+            """
+            Return scores s_k(x) = log N_k(x) + log π_k for all points in Pk.
+            This makes the plotted bin boundaries match the real assignment logic.
+            """
+            # compute log π_k from stored logits
+            mix_logit = np.array([c.get("logit", 0.0) for c in self.best_components], dtype=float)
+            logpi = mix_logit - np.logaddexp.reduce(mix_logit)
+        
             N = Pk.shape[0]
             out = np.zeros((N, self.n_components))
             for idx, g in enumerate(self.best_components):
                 rv = multivariate_normal(mean=g["mean"], cov=g["cov"], allow_singular=True)
-                out[:, idx] = rv.logpdf(Pk)
+                out[:, idx] = rv.logpdf(Pk) + logpi[idx]   # <-- FIX: include mixture weight
             return out
 
         pairs = [(0, 1), (0, 2), (1, 2)]
