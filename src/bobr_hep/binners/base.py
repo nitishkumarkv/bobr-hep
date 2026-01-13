@@ -11,6 +11,11 @@ import mplhep as hep
 import re
 plt.style.use(hep.style.ROOT)
 
+legend_fontsize = 18
+xy_label_fontsize = 22
+tick_label_fontsize = 17
+fig_size = (7, 6)
+
 class bobr_base:
     def __init__(
         self,
@@ -31,6 +36,7 @@ class bobr_base:
         penalty_unc_lambda: float = 1.0,
         rel_unc_threshold: float = 0.1,
         restart_check_trials: int = 200,
+        seed_optimizer: int = 42,
     ) -> None:
         self.df_dict = df_dict
         self.bkg_label_lst = list(bkg_label_lst)
@@ -58,6 +64,7 @@ class bobr_base:
         self.penalty_unc_lambda = penalty_unc_lambda
         self.rel_unc_threshold = rel_unc_threshold
         self.restart_check_trials = int(restart_check_trials)
+        self.seed_optimizer = int(seed_optimizer)
 
     def gamma_fn(self):
         def gamma_linear(n):
@@ -72,6 +79,56 @@ class bobr_base:
             return gamma_sqrt
         else:
             raise ValueError("Unsupported gamma_strategy. Use 'linear' or 'sqrt'.")
+        
+    def plot_optimization_history(self, study, output_dir="."):
+        # Collect finished (non-pruned) trials with objective values
+        trials = [t for t in study.trials if t.value is not None and t.state == optuna.trial.TrialState.COMPLETE]
+
+        if not trials:
+            print("No completed trials to plot.")
+            return
+
+        trial_numbers = [t.number for t in trials]
+        values = [t.value for t in trials]
+
+        # Compute "best so far" at each trial
+        best_values = []
+        current_best = None
+        for v in values:
+            if current_best is None:
+                current_best = v
+            else:
+                current_best = max(current_best, v)
+            best_values.append(current_best)
+
+        fig, ax = plt.subplots(figsize=fig_size)
+
+        # Scatter of all trial outcomes
+        ax.plot(
+                trial_numbers,
+                values,
+                marker="o",
+                label="Objective value",
+                linestyle="None",
+            )
+
+        # Best-so-far line
+        ax.plot(trial_numbers, best_values, label="Best value", color="red")
+
+        ax.set_xlabel("Trial", fontsize=xy_label_fontsize)
+        ax.set_ylabel("Objective value", fontsize=xy_label_fontsize)
+        yrange = max(best_values) - min(best_values)
+        min_ =  min(best_values) - (yrange*0.1)
+        max_ = max(best_values) + (yrange*0.3)
+        ax.set_ylim(min_, max_)
+        ax.legend(loc="upper right", fontsize=legend_fontsize)
+        ax.tick_params(labelsize=tick_label_fontsize)    
+
+
+        fig.tight_layout(pad=0.1, w_pad=0., h_pad=0., rect=(0, 0., 1, 1))
+        fig.savefig(os.path.join(output_dir, "optimization_history_custom.pdf"))
+        plt.close(fig)
+
 
     def visualize_optimization(self) -> None:
         if self.study is None:
@@ -93,6 +150,10 @@ class bobr_base:
             fig.suptitle("Optimization History", fontsize=14)
             fig.savefig(os.path.join(self.output_dir, "optimization_history_plot.pdf"))
             plt.clf()
+        
+        # Custom optimization history plot
+        self.plot_optimization_history(self.study, output_dir=self.output_dir)
+        plt.clf()
 
         trials = [trial for trial in self.study.trials if trial.state == optuna.trial.TrialState.COMPLETE]
         if not trials:
