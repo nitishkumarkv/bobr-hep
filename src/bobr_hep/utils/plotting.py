@@ -4,10 +4,12 @@ import matplotlib.pyplot as plt
 import mplhep as hep  # assuming you use mplhep for histplot
 plt.style.use(hep.style.ROOT)
 
-########################################################################################
-# functions copied from: https://github.com/FloMau/gato/tree/master/
-########################################################################################
-    
+
+legend_fontsize = 18
+xy_label_fontsize = 22
+tick_label_fontsize = 17 #10
+fig_size = (7, 6)  # two-column width in paper    
+
 def plot_stacked_histograms(
     stacked_hists,           # list of hist.hist objects for backgrounds
     process_labels,          # list of labels for backgrounds
@@ -19,7 +21,6 @@ def plot_stacked_histograms(
     normalize=False,
     log=False,
     log_min=None,
-    include_flow=False,
     colors=None,
     return_figure=False,
     ax=None,
@@ -78,7 +79,7 @@ def plot_stacked_histograms(
 
     # Setup figure and axis.
     if ax is None:
-        fig, ax_main = plt.subplots(figsize=(10, 9))
+        fig, ax_main = plt.subplots(figsize=fig_size)
     else:
         fig = None
         ax_main = ax
@@ -112,8 +113,15 @@ def plot_stacked_histograms(
         label=None,
     )
 
+    sig_colors = ["#a96b59",
+            "#b9ac70",
+            "#e76300",
+            "#717581",
+            "#92dadd",]
+
     # Overlay signals
     if signal_hists:
+        sig_counter = 0
         for sig_hist, label in zip(signal_hists, signal_labels):
             if signal_scale != 1.0:
                 sig_hist_ = sig_hist * signal_scale
@@ -128,15 +136,17 @@ def plot_stacked_histograms(
                 [sig_values],
                 label=[label],
                 bins=plot_bin_edges,
-                linewidth=3,
-                linestyle="--",
+                linewidth=4,
+                linestyle="-",
                 yerr=sig_errors,
                 ax=ax_main,
+                color=sig_colors[sig_counter % len(sig_colors)],
             )
+            sig_counter += 1
 
     # Axis labels & scaling
-    ax_main.set_xlabel(axis_labels[0], fontsize=36)
-    ax_main.set_ylabel(axis_labels[1], fontsize=36)
+    ax_main.set_xlabel(axis_labels[0], fontsize=xy_label_fontsize)
+    ax_main.set_ylabel(axis_labels[1], fontsize=xy_label_fontsize)
     ax_main.margins(y=0.15)
 
     if log:
@@ -147,7 +157,7 @@ def plot_stacked_histograms(
     else:
         ax_main.set_ylim(0, 1.25 * ax_main.get_ylim()[1])
 
-    ax_main.tick_params(labelsize=24)
+    ax_main.tick_params(labelsize=tick_label_fontsize)
 
     # --- HERE: make the x-axis look like your second plot ---
     if equidistant_bins:
@@ -165,16 +175,18 @@ def plot_stacked_histograms(
     ncols = 2 if len(labels) < 6 else 3
     ax_main.legend(
         loc="upper right",
-        fontsize=23,
+        fontsize=legend_fontsize,
         ncols=ncols,
         labelspacing=0.4,
         columnspacing=1.5,
     )
+    # set xlim according to the plot_bin_edges
+    ax_main.set_xlim(plot_bin_edges[0], plot_bin_edges[-1])
 
     # Save or return
     if not return_figure:
         os.makedirs(os.path.dirname(output_filename), exist_ok=True)
-        plt.tight_layout()
+        plt.tight_layout(pad=0.1, w_pad=0., h_pad=0., rect=(0, 0., 1, 1))
         fig.savefig(output_filename)
         plt.close(fig)
     else:
