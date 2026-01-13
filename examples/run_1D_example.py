@@ -67,7 +67,8 @@ def main():
     parser.add_argument("--run-equidistant", action="store_true", help="Run equidistant binning")
     parser.add_argument("--nbins", type=int, nargs='+', default=[2, 5, 10, 20], help="List of n_bins values to test")
     parser.add_argument("--n-trials", type=int, default=400, help="Optuna trials override for all nbins")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for toy data generation")
+    parser.add_argument("--seed_data", type=int, default=42, help="Random seed for toy data generation")
+    parser.add_argument("--seed_optimizer", type=int, default=42, help="Random seed for optimizer")
     parser.add_argument("--save-assigned", action="store_true", help="Save per-event assigned bin indices (parquet)")
     parser.add_argument("--min-bkg-per-bin", type=int, default=1, help="Minimum background count per bin (overrides binner default)")
     parser.add_argument("--penalty-low-lambda", type=float, default=10, help="Weight for low-background penalty")
@@ -77,22 +78,19 @@ def main():
     parser.add_argument("--n-bkg", type=int, default=100000, help="Number of background events for toy data")
     args = parser.parse_args()
 
-    np.random.seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    bkg_list = ["bkg1", "bkg2", "bkg3"]
+    bkg_list = ["bkg1", "bkg2", "bkg3", "bkg4", "bkg5"]
+    bkg_list_label = [f"Bkg. {i+1}" for i in range(len(bkg_list))]
     signal_list = ["signal"]
+    signal_list_label = ["Signal"]
 
     # Generate toy data (dict of DataFrames)
     toy_data = generate_toy_data_1D(
-        n_signal=100000,
         n_bkg=args.n_bkg,
-        xs_signal=0.5,
-        xs_bkg1=100,
-        xs_bkg2=80,
-        xs_bkg3=50,
-        lumi=100,
-        seed=args.seed
+        seed=args.seed_data,
+        n_signal=100000,
+        case=0,
     )
 
     # Quick plots of the toy data
@@ -103,15 +101,15 @@ def main():
         signal_hists = [create_hist(toy_data[signal]) for signal in signal_list]
         plot_stacked_histograms(
             bkg_hists,
-            bkg_list,
+            bkg_list_label,
             output_filename=f"{data_path}/plot_log.pdf",
-            axis_labels=("NN output", "Events"),
+            axis_labels=("Toy discriminant", "Events"),
             signal_hists=signal_hists,
-            signal_labels=signal_list,
+            signal_labels=signal_list_label,
             signal_scale=100,
             normalize=False,
             log=True,
-            log_min=1e-1,
+            equidistant_bins=False
         )
 
     nbins_list = args.nbins
@@ -149,6 +147,7 @@ def main():
             penalty_unc_lambda=args.penalty_unc_lambda,
             rel_unc_threshold=args.rel_unc_threshold,
             restart_check_trials=args.restart_check_trials,
+            seed_optimizer=args.seed_optimizer,
         )
 
         if args.run_bobr:
@@ -193,15 +192,14 @@ def main():
             best_bkg_hists = [create_hist(toy_data[bkg], bin_edges=best_bins_bobr) for bkg in bkg_list]
             plot_stacked_histograms(
                 best_bkg_hists,
-                bkg_list,
+                bkg_list_label,
                 output_filename=os.path.join(bobr_output_dir, "plot_log.pdf"),
-                axis_labels=("NN output", "Events"),
+                axis_labels=("Toy discriminant", "Events"),
                 signal_hists=best_signal_hists,
-                signal_labels=signal_list,
+                signal_labels=signal_list_label,
                 signal_scale=100,
                 normalize=False,
                 log=True,
-                log_min=1e-5,
             )
 
             # Use predict to assign bin indices and optionally save per-event assignments
@@ -274,15 +272,15 @@ def main():
             best_bkg_hists = [create_hist(toy_data[bkg], bin_edges=best_bins_equi) for bkg in bkg_list]
             plot_stacked_histograms(
                 best_bkg_hists,
-                bkg_list,
+                bkg_list_label,
                 output_filename=os.path.join(equi_output_dir, "plot_log.pdf"),
-                axis_labels=("NN output", "Events"),
+                axis_labels=("Toy discriminant", "Events"),
                 signal_hists=best_signal_hists,
-                signal_labels=signal_list,
+                signal_labels=signal_list_label,
                 signal_scale=100,
                 normalize=False,
                 log=True,
-                log_min=1e-5,
+                equidistant_bins=False
             )
 
             # Use equi.predict (or numpy) to assign bins

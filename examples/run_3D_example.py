@@ -2,6 +2,8 @@
 from bobr_hep.utils.data_generation import generate_toy_data_3class
 from bobr_hep.utils.plotting import plot_stacked_histograms
 from bobr_hep.bobr import bobr_gmm, equidistant, bobr_1d
+from bobr_hep.binners.base import bobr_base  # reuse helper
+
 
 import os
 import argparse
@@ -141,7 +143,8 @@ def main():
     parser.add_argument("--n-trials", type=int, default=300, help="Optuna trials per nbins")
     parser.add_argument("--restart-check-trials", type=int, default=50, help="Trials before a beta-halving restart check")
     parser.add_argument("--n-bkg", type=int, default=500000, help="Number of background events for toy data")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--seed_data", type=int, default=42, help="Random seed for toy data generation")
+    parser.add_argument("--seed_optimizer", type=int, default=42, help="Random seed for optimizer")
     parser.add_argument("--beta", type=float, default=0.25, help="Initial beta for beta-halving restarts")
 
     # penalties/thresholds consistent with 1D script
@@ -163,7 +166,6 @@ def main():
                         help="Assignment used in optimization and metrics (default: hard)")
 
     args = parser.parse_args()
-    np.random.seed(args.seed)
 
     os.makedirs(args.output_dir, exist_ok=True)
     data_path = os.path.join(args.output_dir, "toy_data")
@@ -171,7 +173,9 @@ def main():
 
     # Labels
     bkg_list = ["bkg1", "bkg2", "bkg3", "bkg4", "bkg5"]
+    bkg_list_label = [f"Bkg. {i+1}" for i in range(len(bkg_list))]
     signal_list = ["signal1", "signal2"]
+    signal_list_label = ["Signal1", "Signal2"]
 
     # Parse dims_to_use
     dims_to_use = [int(s.strip()) for s in args.dims.split(",") if s.strip()]
@@ -181,8 +185,10 @@ def main():
         if d not in (0, 1, 2):
             raise ValueError("--dims must pick among 0,1,2")
 
+    dims_to_use_argmax = [0, 1, 2]  # always use all dims for argmax baseline
+
     # --- Generate toy data (dict of DataFrames) ---
-    toy_data = generate_toy_data_3class(seed=args.seed, n_bkg=args.n_bkg)
+    toy_data = generate_toy_data_3class(seed=args.seed_data, n_bkg=args.n_bkg)
 
     # Quick plots per coordinate (before any selection)
     if args.plot_toy_data:
@@ -190,18 +196,20 @@ def main():
             bkg_hists = [create_hist(toy_data[bkg], var="NN_output", class_num=i) for bkg in bkg_list]
             signal_hists = [create_hist(toy_data[signal], var="NN_output", class_num=i) for signal in signal_list]
             plot_stacked_histograms(
-                bkg_hists, bkg_list,
+                bkg_hists, bkg_list_label,
                 output_filename=f"{data_path}/plot_log_score_{i}.pdf",
-                axis_labels=(f"NN output (dim {i})", "Events"),
-                signal_hists=signal_hists, signal_labels=signal_list,
+                axis_labels=(f"Toy discriminant (dim. {i})", "Events"),
+                signal_hists=signal_hists, signal_labels=signal_list_label,
                 signal_scale=100, normalize=False, log=True, log_min=None,
+                equidistant_bins=False
             )
             plot_stacked_histograms(
-                bkg_hists, bkg_list,
+                bkg_hists, bkg_list_label,
                 output_filename=f"{data_path}/plot_score_{i}.pdf",
-                axis_labels=(f"NN output (dim {i})", "Events"),
-                signal_hists=signal_hists, signal_labels=signal_list,
+                axis_labels=(f"Toy discriminant (dim. {i})", "Events"),
+                signal_hists=signal_hists, signal_labels=signal_list_label,
                 signal_scale=100, normalize=False, log=False, log_min=None,
+                equidistant_bins=False
             )
 
     # Containers for summary plot across nbins
@@ -239,19 +247,16 @@ def main():
             rel_unc_threshold=args.rel_unc_threshold,
             restart_check_trials=args.restart_check_trials,
             beta=args.beta,
-            #min_edge=-0.2,
-            #max_edge=1.2,
+            min_edge=0,
+            max_edge=1,
+            seed_optimizer=args.seed_optimizer,
         )
 
         best_components, best_hist, best_score = (None, None, None)
         gmm_Z = None
         if args.run_bobr:
             best_components, best_hist, best_score = optimizer.run()
-            # prefer stored combined_Z (unpenalized)
-            try:
-                gmm_Z = float(optimizer.best_metrics.get("combined_Z", best_score))
-            except Exception:
-                gmm_Z = float(best_score) if best_score is not None else float("nan")
+            gmm_Z = float(optimizer.best_metrics.get("combined_Z", best_score))
             gmm_Zs.append(gmm_Z)
 
             optimizer.visualize_optimization()
@@ -263,18 +268,20 @@ def main():
             best_signal_hists = [create_binindex_hist(toy_data[s], n_bins, var="bin_index") for s in signal_list]
             best_bkg_hists = [create_binindex_hist(toy_data[b], n_bins, var="bin_index") for b in bkg_list]
             plot_stacked_histograms(
-                best_bkg_hists, bkg_list,
+                best_bkg_hists, bkg_list_label,
                 output_filename=os.path.join(gmm_dir, "plot_log.pdf"),
                 axis_labels=("Bin index", "Events"),
-                signal_hists=best_signal_hists, signal_labels=signal_list,
+                signal_hists=best_signal_hists, signal_labels=signal_list_label,
                 signal_scale=100, normalize=False, log=True, log_min=None,
+                equidistant_bins=False
             )
             plot_stacked_histograms(
-                best_bkg_hists, bkg_list,
+                best_bkg_hists, bkg_list_label,
                 output_filename=os.path.join(gmm_dir, "plot.pdf"),
                 axis_labels=("Bin index", "Events"),
-                signal_hists=best_signal_hists, signal_labels=signal_list,
+                signal_hists=best_signal_hists, signal_labels=signal_list_label,
                 signal_scale=100, normalize=False, log=False, log_min=None,
+                equidistant_bins=False
             )
 
             # Save per-bin background yields & rel uncertainty
@@ -287,32 +294,17 @@ def main():
             summary.setdefault(str(n_bins), {})
             summary[str(n_bins)]["gmm_best_Z"] = gmm_Z
             summary[str(n_bins)]["gmm_components"] = make_json_serializable(best_components)
-        else:
-            # If we didn't run the optimizer now, require loading a saved checkpoint and apply it to the toy data.
-            # This mirrors the 1D example pattern: strict load (no silent fallback) and compute per-label hist/sumsq/metrics.
-            ckpt_path = os.path.join(gmm_dir, "checkpoint")
-            # Load checkpoint (do not attach df on load) and explicitly apply to toy_data
-            pred_gmm = bobr_gmm.load_checkpoint(ckpt_path)
-            hist_new, sumsq_new, metrics_new = pred_gmm.apply_to_df(toy_data)
-            try:
-                gmm_Z = float(metrics_new.get("combined_Z", pred_gmm.best_score))
-            except Exception:
-                gmm_Z = float(pred_gmm.best_score) if getattr(pred_gmm, "best_score", None) is not None else float("nan")
-            gmm_Zs.append(gmm_Z)
-            summary.setdefault(str(n_bins), {})
-            summary[str(n_bins)]["gmm_best_Z"] = gmm_Z
-            summary[str(n_bins)]["gmm_components"] = make_json_serializable(getattr(pred_gmm, "best_components", None))
 
         # ----------------------------------------------------------------
         # 2) Argmax(selected dims) → 1D methods on S1/S2 subsets
         # ----------------------------------------------------------------
         def _max_on_selected(vec):
             arr = np.asarray(vec, dtype=float)
-            return float(np.max(arr[dims_to_use]))
+            return float(np.max(arr[dims_to_use_argmax]))
 
         def _argmax_on_selected(vec):
             arr = np.asarray(vec, dtype=float)
-            return int(np.argmax(arr[dims_to_use]))  # 0 or 1 typically
+            return int(np.argmax(arr[dims_to_use_argmax]))  # 0 or 1 typically
 
         toy_data_with_sel = {}
         for proc, df in toy_data.items():
@@ -327,10 +319,11 @@ def main():
         # ------- Equidistant on S1 -------
         equi_s1_dir = os.path.join(nb_dir, "equidistant_s1")
         os.makedirs(equi_s1_dir, exist_ok=True)
+        bkg_list_s1 = bkg_list#+["signal2"]  # include signal2 as background in S1 region
         equi_s1 = equidistant(
             toy_data_s1,
-            bkg_label_lst=bkg_list,
-            signal_label_lst=["signal1"],
+            bkg_label_lst=bkg_list_s1,
+            signal_label_lst=["signal1", "signal2"],
             var_label="max_score_sel",
             weight_label="weight",
             n_bins=n_bins,
@@ -344,36 +337,39 @@ def main():
         best_bins_eq_s1 = best_hist_eq_s1 = best_Z_eq_s1 = None
         if args.run_equidistant:
             best_bins_eq_s1, best_hist_eq_s1, best_Z_eq_s1 = equi_s1.run()
-            try:
-                best_Z_eq_s1 = float(equi_s1.best_metrics.get("combined_Z", best_Z_eq_s1))
-            except Exception:
-                pass
+            best_Z_eq_s1 = float(equi_s1.best_metrics.get("combined_Z", best_Z_eq_s1))
+            
             if best_bins_eq_s1 is not None:
-                s1_sig_h = [create_hist(toy_data_s1["signal1"], bin_edges=best_bins_eq_s1, var="max_score_sel")]
+                #s1_sig_h = [create_hist(toy_data_s1["signal1"], bin_edges=best_bins_eq_s1, var="max_score_sel")]
+                s1_sig_h = [create_hist(toy_data_s1[s], bin_edges=best_bins_eq_s1, var="max_score_sel") for s in ["signal1", "signal2"]]
                 s1_bkg_h = [create_hist(toy_data_s1[b], bin_edges=best_bins_eq_s1, var="max_score_sel") for b in bkg_list]
+                print("s1_bkg_h:", s1_sig_h)
                 plot_stacked_histograms(
-                    s1_bkg_h, bkg_list,
+                    s1_bkg_h, bkg_list_label,
                     output_filename=os.path.join(equi_s1_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
-                    signal_hists=s1_sig_h, signal_labels=["signal1"],
+                    signal_hists=s1_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=True, log_min=None,
+                    equidistant_bins=False
                 )
                 plot_stacked_histograms(
-                    s1_bkg_h, bkg_list,
+                    s1_bkg_h, bkg_list_label,
                     output_filename=os.path.join(equi_s1_dir, "plot.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
-                    signal_hists=s1_sig_h, signal_labels=["signal1"],
+                    signal_hists=s1_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=False, log_min=None,
+                    equidistant_bins=False
                 )
             save_bin_metrics(equi_s1_dir, equi_s1, prefix="equi_s1")
 
         # ------- Equidistant on S2 -------
         equi_s2_dir = os.path.join(nb_dir, "equidistant_s2")
         os.makedirs(equi_s2_dir, exist_ok=True)
+        bkg_list_s2 = bkg_list#+["signal1"]  # include signal1 as background in S2 region
         equi_s2 = equidistant(
             toy_data_s2,
-            bkg_label_lst=bkg_list,
-            signal_label_lst=["signal2"],
+            bkg_label_lst=bkg_list_s2,
+            signal_label_lst=["signal2", "signal1"],
             var_label="max_score_sel",
             weight_label="weight",
             n_bins=n_bins,
@@ -387,25 +383,23 @@ def main():
         best_bins_eq_s2 = best_hist_eq_s2 = best_Z_eq_s2 = None
         if args.run_equidistant:
             best_bins_eq_s2, best_hist_eq_s2, best_Z_eq_s2 = equi_s2.run()
-            try:
-                best_Z_eq_s2 = float(equi_s2.best_metrics.get("combined_Z", best_Z_eq_s2))
-            except Exception:
-                pass
+            best_Z_eq_s2 = float(equi_s2.best_metrics.get("combined_Z", best_Z_eq_s2))
             if best_bins_eq_s2 is not None:
-                s2_sig_h = [create_hist(toy_data_s2["signal2"], bin_edges=best_bins_eq_s2, var="max_score_sel")]
+                #s2_sig_h = [create_hist(toy_data_s2["signal2"], bin_edges=best_bins_eq_s2, var="max_score_sel")]
+                s2_sig_h = [create_hist(toy_data_s2[s], bin_edges=best_bins_eq_s2, var="max_score_sel") for s in ["signal1", "signal2"]]
                 s2_bkg_h = [create_hist(toy_data_s2[b], bin_edges=best_bins_eq_s2, var="max_score_sel") for b in bkg_list]
                 plot_stacked_histograms(
-                    s2_bkg_h, bkg_list,
+                    s2_bkg_h, bkg_list_label,
                     output_filename=os.path.join(equi_s2_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
-                    signal_hists=s2_sig_h, signal_labels=["signal2"],
+                    signal_hists=s2_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=True, log_min=None,
                 )
                 plot_stacked_histograms(
-                    s2_bkg_h, bkg_list,
+                    s2_bkg_h, bkg_list_label,
                     output_filename=os.path.join(equi_s2_dir, "plot.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
-                    signal_hists=s2_sig_h, signal_labels=["signal2"],
+                    signal_hists=s2_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=False, log_min=None,
                 )
             save_bin_metrics(equi_s2_dir, equi_s2, prefix="equi_s2")
@@ -415,8 +409,8 @@ def main():
         os.makedirs(bobr1_s1_dir, exist_ok=True)
         bobr1_s1 = bobr_1d(
             toy_data_s1,
-            bkg_label_lst=bkg_list,
-            signal_label_lst=["signal1"],
+            bkg_label_lst=bkg_list_s1,
+            signal_label_lst=["signal1", "signal2"],
             var_label="max_score_sel",
             weight_label="weight",
             n_bins=n_bins,
@@ -429,29 +423,29 @@ def main():
             rel_unc_threshold=args.rel_unc_threshold,
             restart_check_trials=args.restart_check_trials,
             min_edge=0.3,
+            seed_optimizer=args.seed_optimizer,
         )
         best_bins_b1_s1 = best_hist_b1_s1 = best_Z_b1_s1 = None
         if args.run_equidistant:
             best_bins_b1_s1, best_hist_b1_s1, best_Z_b1_s1 = bobr1_s1.run()
-            try:
-                best_Z_b1_s1 = float(bobr1_s1.best_metrics.get("combined_Z", best_Z_b1_s1))
-            except Exception:
-                pass
+            best_Z_b1_s1 = float(bobr1_s1.best_metrics.get("combined_Z", best_Z_b1_s1))
+
             if best_bins_b1_s1 is not None:
-                s1_sig_h = [create_hist(toy_data_s1["signal1"], bin_edges=best_bins_b1_s1, var="max_score_sel")]
+                #s1_sig_h = [create_hist(toy_data_s1["signal1"], bin_edges=best_bins_b1_s1, var="max_score_sel")]
+                s1_sig_h = [create_hist(toy_data_s1[s], bin_edges=best_bins_b1_s1, var="max_score_sel") for s in ["signal1", "signal2"]]
                 s1_bkg_h = [create_hist(toy_data_s1[b], bin_edges=best_bins_b1_s1, var="max_score_sel") for b in bkg_list]
                 plot_stacked_histograms(
-                    s1_bkg_h, bkg_list,
+                    s1_bkg_h, bkg_list_label,
                     output_filename=os.path.join(bobr1_s1_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
-                    signal_hists=s1_sig_h, signal_labels=["signal1"],
+                    signal_hists=s1_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=True, log_min=None,
                 )
                 plot_stacked_histograms(
-                    s1_bkg_h, bkg_list,
+                    s1_bkg_h, bkg_list_label,
                     output_filename=os.path.join(bobr1_s1_dir, "plot.pdf"),
                     axis_labels=("Max-score (S1 region)", "Events"),
-                    signal_hists=s1_sig_h, signal_labels=["signal1"],
+                    signal_hists=s1_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=False, log_min=None,
                 )
             save_bin_metrics(bobr1_s1_dir, bobr1_s1, prefix="bobr1_s1")
@@ -461,8 +455,8 @@ def main():
         os.makedirs(bobr1_s2_dir, exist_ok=True)
         bobr1_s2 = bobr_1d(
             toy_data_s2,
-            bkg_label_lst=bkg_list,
-            signal_label_lst=["signal2"],
+            bkg_label_lst=bkg_list_s2,
+            signal_label_lst=["signal2", "signal1"],
             var_label="max_score_sel",
             weight_label="weight",
             n_bins=n_bins,
@@ -475,29 +469,29 @@ def main():
             rel_unc_threshold=args.rel_unc_threshold,
             restart_check_trials=args.restart_check_trials,
             min_edge=0.3,
+            seed_optimizer=args.seed_optimizer,
         )
         best_bins_b1_s2 = best_hist_b1_s2 = best_Z_b1_s2 = None
         if args.run_equidistant:
             best_bins_b1_s2, best_hist_b1_s2, best_Z_b1_s2 = bobr1_s2.run()
-            try:
-                best_Z_b1_s2 = float(bobr1_s2.best_metrics.get("combined_Z", best_Z_b1_s2))
-            except Exception:
-                pass
+            best_Z_b1_s2 = float(bobr1_s2.best_metrics.get("combined_Z", best_Z_b1_s2))
+
             if best_bins_b1_s2 is not None:
-                s2_sig_h = [create_hist(toy_data_s2["signal2"], bin_edges=best_bins_b1_s2, var="max_score_sel")]
+                #s2_sig_h = [create_hist(toy_data_s2["signal2"], bin_edges=best_bins_b1_s2, var="max_score_sel")]
+                s2_sig_h = [create_hist(toy_data_s2[s], bin_edges=best_bins_b1_s2, var="max_score_sel") for s in ["signal1", "signal2"]]
                 s2_bkg_h = [create_hist(toy_data_s2[b], bin_edges=best_bins_b1_s2, var="max_score_sel") for b in bkg_list]
                 plot_stacked_histograms(
-                    s2_bkg_h, bkg_list,
+                    s2_bkg_h, bkg_list_label,
                     output_filename=os.path.join(bobr1_s2_dir, "plot_log.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
-                    signal_hists=s2_sig_h, signal_labels=["signal2"],
+                    signal_hists=s2_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=True, log_min=None,
                 )
                 plot_stacked_histograms(
-                    s2_bkg_h, bkg_list,
+                    s2_bkg_h, bkg_list_label,
                     output_filename=os.path.join(bobr1_s2_dir, "plot.pdf"),
                     axis_labels=("Max-score (S2 region)", "Events"),
-                    signal_hists=s2_sig_h, signal_labels=["signal2"],
+                    signal_hists=s2_sig_h, signal_labels=["Signal 1", "Signal 2"],
                     signal_scale=100, normalize=False, log=False, log_min=None,
                 )
             save_bin_metrics(bobr1_s2_dir, bobr1_s2, prefix="bobr1_s2")
