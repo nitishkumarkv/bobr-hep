@@ -1,7 +1,6 @@
-from examples.toy_example.generate_toy_data import generate_toy_data, generate_toy_data_gauss, generate_toy_data_3D, generate_toy_data_multiclass
-from utils.plotting import plot_stacked_histograms
-from bobr.cat_optimizer import BOBRBinOptimizer
-from bobr.cat_optimizer_multiclass import GMMBinOptimizer
+from bobr_hep.utils.data_generation import generate_toy_data_3class
+from bobr_hep.utils.plotting import plot_stacked_histograms
+from bobr_hep.bobr import bobr_gmm, equidistant, bobr_1d
 import os
 import argparse
 import pandas as pd
@@ -31,11 +30,15 @@ def main():
 
     # initialize the parser
     parser = argparse.ArgumentParser(description="Run the toy example")
-    parser.add_argument("--output-dir", type=str, default="toy_results", help="Output directory")
+    parser.add_argument("--output-dir", type=str, default="toy_results_3d", help="Output directory")
     #parser.add_argument("--generate-toy-data", action="store_true", help="Generate toy data")
     parser.add_argument("--plot-toy-data", action="store_true", help="Plot toy data")
     parser.add_argument("--run-BOBR", action="store_true", help="Run BOBR optimizer")
     parser.add_argument("--run-equidistance", action="store_true", help="Run equidistance optimizer")
+    parser.add_argument("--fit-labels", type=str, default=None, help="Comma-separated list of label names to fit the GMM on (e.g. 'bkg1,bkg2,signal1'). If omitted, fits on all labels.")
+    parser.add_argument("--restart-check-trials", type=int, default=200, help="Trials per restart attempt before halving beta and restarting optimization")
+    parser.add_argument("--n-trials", type=int, default=None, help="Optuna trials override for the GMM optimizer (per n_bins)")
+    parser.add_argument("--n-bkg", type=int, default=500000, help="Number of background events for toy data")
     args = parser.parse_args()
 
     # create the output directory
@@ -45,7 +48,7 @@ def main():
     bkg_list = ["bkg1", "bkg2", "bkg3", "bkg4", "bkg5"]
     signal_list = ["signal1", "signal2"]
 
-    toy_data = generate_toy_data_3D(seed=42)
+    toy_data = generate_toy_data_3class(seed=42, n_bkg=args.n_bkg)
 
     n_classes = 3
 
@@ -77,7 +80,7 @@ def main():
             log_min=1e-5,
         )
 
-    num_bins_lst = [3, 5, 10, 15, 20]
+    num_bins_lst = [5]#, 10]
     #num_bins_lst = [3, 5]
     z1_sum_quad_list = []
     z2_sum_quad_list = []
@@ -86,29 +89,57 @@ def main():
 
         bin_directory = args.output_dir + f"/n_{num_bins}"
 
-        optimizer = GMMBinOptimizer(
-            df_dict          = toy_data,
-            bkg_label_lst    = ["bkg1","bkg2","bkg3","bkg4","bkg5"],
-            signal_label_lst = ["signal1","signal2"],
-            var_label        = "NN_output",
-            weight_label     = "weight",
-            n_bins           = num_bins,
-            n_trials         = 100,
-            output_dir       = bin_directory,
-            combination      = "geometric",
+        # determine fit labels from --fit-labels (otherwise use all labels)
+        if args.fit_labels:
+            fit_label_lst = [s.strip() for s in args.fit_labels.split(",") if s.strip()]
+        else:
+            fit_label_lst = None
+
+        this_dir = os.path.join(bin_directory, "fit_all_or_specified")
+        os.makedirs(this_dir, exist_ok=True)
+
+        # determine number of optuna trials (allow overriding via CLI)
+        n_trials_default = 100
+        if args.n_trials is not None:
+            n_trials_default = int(args.n_trials)
+
+        optimizer = bobr_gmm(
+            toy_data,
+            bkg_label_lst=["bkg1", "bkg2", "bkg3", "bkg4", "bkg5"],
+            signal_label_lst=["signal1", "signal2"],
+            var_label="NN_output",
+            weight_label="weight",
+            n_bins=num_bins,
+            n_trials=n_trials_default,
+            output_dir=this_dir,
+            combination="geometric",
+            fit_label_lst=fit_label_lst,
+            restart_check_trials=args.restart_check_trials,
         )
 
         # 3) optimize & visualize
-        best_gaussians, best_hist, best_Z = optimizer.optimize_bins()
+        best_gaussians, best_hist, best_Z = optimizer.run()
 
         print("Best combined Z =", best_Z)
 
-        #optimizer.visualize_optimization()
-        #optimizer.assign_bins_to_data()
-        optimizer.visualize_labelled_ellipses()
-        optimizer.visualize_bins_2d()
-        #optimizer.visualize_bin_boundaries_2d()
-        optimizer.visualize_bin_boundaries_simplex_pairs()
+        # Visualize using the new base-class visualize_optimization (and specific plots)
+        optimizer.visualize_optimization()
+        # For compatibility with legacy visualization methods, call available helpers if present
+        if hasattr(optimizer, "visualize_labelled_ellipses"):
+            try:
+                optimizer.visualize_labelled_ellipses()
+            except Exception:
+                pass
+        if hasattr(optimizer, "visualize_bins_2d"):
+            try:
+                optimizer.visualize_bins_2d()
+            except Exception:
+                pass
+        if hasattr(optimizer, "visualize_bin_boundaries_simplex_pairs"):
+            try:
+                optimizer.visualize_bin_boundaries_simplex_pairs()
+            except Exception:
+                pass
 
         bin_edges = [i for i in range(num_bins+1)]
 
@@ -187,16 +218,48 @@ def main():
         z2_equ_lst = []
 
         for n_bins in n_bins_lst_equi:
-            optimize_equidistance_s1 = BOBRBinOptimizer(toy_data, bkg_label_lst=s1_bkg_list, signal_label_lst=s1_signal_list,
-                                        var_label='max_score', weight_label='weight', n_bins=n_bins, output_dir=args.output_dir+f"/equidistant_s1_{n_bins}")
-        
-            optimize_equidistance_s2 = BOBRBinOptimizer(toy_data, bkg_label_lst=s2_bkg_list, signal_label_lst=s2_signal_list,
-                                        var_label='max_score', weight_label='weight', n_bins=n_bins, output_dir=args.output_dir+f"/equidistant_s2_{n_bins}")
-            
-            best_bins_eqi_s1, best_hist_dict_eqi_s1, best_Z_eqi_s1 = optimize_equidistance_s1.equidistant_bins()
-            best_bins_eqi_s2, best_hist_dict_eqi_s2, best_Z_eqi_s2 = optimize_equidistance_s2.equidistant_bins()
+            optimize_equidistance_s1 = equidistant(
+                toy_data, bkg_label_lst=s1_bkg_list, signal_label_lst=s1_signal_list,
+                var_label='max_score', weight_label='weight', n_bins=n_bins,
+                output_dir=args.output_dir+f"/equidistant_s1_{n_bins}")
+
+            optimize_equidistance_s2 = equidistant(
+                toy_data, bkg_label_lst=s2_bkg_list, signal_label_lst=s2_signal_list,
+                var_label='max_score', weight_label='weight', n_bins=n_bins,
+                output_dir=args.output_dir+f"/equidistant_s2_{n_bins}")
+
+            best_bins_eqi_s1, best_hist_dict_eqi_s1, best_Z_eqi_s1 = optimize_equidistance_s1.run()
+            best_bins_eqi_s2, best_hist_dict_eqi_s2, best_Z_eqi_s2 = optimize_equidistance_s2.run()
             z1_equ_lst.append(best_Z_eqi_s1)
             z2_equ_lst.append(best_Z_eqi_s2)
+
+            # --- Argmax + BOBR 1D comparison ---
+            optimize_bobr1_s1 = bobr_1d(
+                toy_data,
+                bkg_label_lst=s1_bkg_list,
+                signal_label_lst=s1_signal_list,
+                var_label='max_score',
+                weight_label='weight',
+                n_bins=n_bins,
+                output_dir=args.output_dir + f"/bobr1_s1_{n_bins}",
+            )
+
+            optimize_bobr1_s2 = bobr_1d(
+                toy_data,
+                bkg_label_lst=s2_bkg_list,
+                signal_label_lst=s2_signal_list,
+                var_label='max_score',
+                weight_label='weight',
+                n_bins=n_bins,
+                output_dir=args.output_dir + f"/bobr1_s2_{n_bins}",
+            )
+
+            best_bins_bobr1_s1, best_hist_bobr1_s1, best_Z_bobr1_s1 = optimize_bobr1_s1.run()
+            best_bins_bobr1_s2, best_hist_bobr1_s2, best_Z_bobr1_s2 = optimize_bobr1_s2.run()
+
+            # record comparison results
+            z1_equ_lst.append(best_Z_bobr1_s1)
+            z2_equ_lst.append(best_Z_bobr1_s2)
 
             # for s1
             best_signal_hists = [create_hist(toy_data_s1[signal], bin_edges=best_bins_eqi_s1, var="max_score") for signal in signal_list]

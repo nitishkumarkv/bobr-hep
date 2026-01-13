@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bobr-hep"              # change to your package name
+version = "0.1.0"
+description = "BOBR: Bayesian Optimisation of Bin boundaRies"
+readme = "README.md"
+authors = [ { name = "Nitish Kumar Kasarauppe Veerappa Gowda", email = "nitish.kumar.kasaraguppe@rwth-aachen.de" } ]
+license = { file = "MIT" }
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20",
+    "mplhep",
+    "matplotlib>=3.7",
+    "pandas",
+    "hist",
+    "optuna",
+    "scipy"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "flake8>=4.0",
+    "black>=22.0",
+    "isort>=5.0"
+]
+docs = [ "sphinx", "mkdocs", "mkdocstrings" ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
